@@ -315,6 +315,42 @@ pub enum SkywardEnd {
     WriteFailed(Vec<Slot>, String),
 }
 
+/// The full browser the owner may download onto the phone: whether it is
+/// there, how much it takes, and the download of it, or how that last ended.
+/// It is optional by design — without it the browser reads pages the plain
+/// way, with the text their HTML holds.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Plugin {
+    /// Whether the plugin is on the phone, as far as the recovery knows.
+    pub there: bool,
+    /// Bytes it takes there, where that was told: the download that put it
+    /// there knows, and a plugin already there does not.
+    pub size: Option<u64>,
+    /// The download of it, or how that last ended.
+    pub job: Option<PluginJob>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PluginJob {
+    /// None until the download has begun.
+    pub stage: Option<Progress>,
+    /// Bytes a second, while it downloads.
+    pub rate: u64,
+    pub outcome: Option<PluginEnd>,
+    /// Stopping the download was asked for and is under way.
+    pub stopping: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PluginEnd {
+    /// The plugin is on the phone and takes these bytes.
+    Installed(u64),
+    /// The download was stopped; the browser still reads the plain way.
+    Stopped,
+    /// The download, or unpacking it, failed: why.
+    Failed(String),
+}
+
 /// Where the full packages downloaded go, from the top of internal
 /// storage: the folder the stock updater keeps them in.
 pub const DOWNLOADS: &str = "downloaded_rom";
@@ -380,6 +416,8 @@ pub const BOOKMARK_KEPT: Text = ["已存为书签", "已存為書籤", "Kept as 
 pub const BOOKMARK_DROPPED: Text = ["已从书签里删去", "已從書籤裡刪去", "Taken out of the bookmarks"];
 /// Said when every bookmark is taken away.
 pub const BOOKMARKS_GONE: Text = ["书签已清空", "書籤已清空", "The bookmarks are gone"];
+/// Said when the full browser is taken off the phone again.
+pub const PLUGIN_GONE: Text = ["完整浏览器已删除，页面回到纯文本阅读", "完整瀏覽器已刪除，頁面回到純文字閱讀", "The full browser is gone: pages read as text again"];
 
 /// A password typed, which what is printed of it leaves out: the recovery
 /// prints each effect the pages ask for.
@@ -1620,6 +1658,11 @@ pub enum Action {
     UpdateSkyward,
     /// Stop downloading the build.
     StopSkywardUpdate,
+    /// Download the full browser onto the phone, so a page its scripts build
+    /// reads as the page it looks like; or take it off again.
+    GetPlugin,
+    StopPlugin,
+    DropPlugin,
     /// Time each mirror against the build the next update would download,
     /// and take the quickest of them as the one the pages go through.
     WeighMirrors,
@@ -2247,6 +2290,9 @@ pub struct State {
     pub skyward_check: SkywardCheck,
     /// Updating Skyward, or how that last ended.
     pub skyward_job: Option<SkywardJob>,
+    /// The full browser the owner may keep on the phone: whether it is
+    /// there, and the download of it.
+    pub plugin: Plugin,
     /// Timing the mirrors against the build the next update would download,
     /// or what each one gave the last time.
     pub weighing: Weighing,
@@ -2369,6 +2415,7 @@ impl Default for State {
             download: None,
             skyward_check: SkywardCheck::Idle,
             skyward_job: None,
+            plugin: Plugin::default(),
             weighing: Weighing::Idle,
             url: String::new(),
             fetch_job: None,
@@ -2679,6 +2726,13 @@ pub enum Effect {
     /// [`App::skyward_ended`].
     UpdateSkyward(Build),
     StopSkywardUpdate,
+    /// Download the full browser onto the phone and unpack it there, telling
+    /// how it goes with [`App::plugin_progress`] and [`App::plugin_ended`].
+    GetPlugin,
+    StopPlugin,
+    /// Take the full browser off the phone, telling how it went with
+    /// [`App::plugin_dropped`].
+    DropPlugin,
     /// Write the Skyward build kept at `path` in `place` into the recovery
     /// partitions, telling how it goes with [`App::skyward_progress`] and
     /// [`App::skyward_ended`].
@@ -4512,6 +4566,55 @@ impl App {
         job.stopping = false;
         job.outcome = Some(end);
         self.wake(now);
+        self.refresh();
+    }
+
+    /// The full browser was looked at: it is there and takes `size` bytes,
+    /// where that is known, or it is not there at all.
+    pub fn plugin_seen(&mut self, there: bool, size: Option<u64>) {
+        self.state.plugin.there = there;
+        self.state.plugin.size = size;
+        self.refresh();
+    }
+
+    /// How far downloading the full browser has come.
+    pub fn plugin_progress(&mut self, progress: Progress, rate: u64) {
+        let job = self.state.plugin.job.as_mut().expect("only a download under way moves on");
+        job.stage = Some(progress);
+        job.rate = rate;
+        self.refresh();
+    }
+
+    /// Downloading and unpacking the full browser ended, and here is what it
+    /// came to: the plugin on the phone, taking these bytes; stopped; or why
+    /// it is not there.
+    pub fn plugin_ended(&mut self, end: PluginEnd, now: u64) {
+        let job = self.state.plugin.job.as_mut().expect("only a download under way ends");
+        job.stopping = false;
+        job.outcome = Some(end.clone());
+        match end {
+            PluginEnd::Installed(bytes) => {
+                self.state.plugin.there = true;
+                self.state.plugin.size = Some(bytes);
+            }
+            PluginEnd::Stopped | PluginEnd::Failed(_) => {}
+        }
+        self.wake(now);
+        self.refresh();
+    }
+
+    /// Taking the full browser away ended: gone, the browser reads the
+    /// plain way again; or why it is still there.
+    pub fn plugin_dropped(&mut self, dropped: Result<(), String>, now: u64) {
+        match dropped {
+            Ok(()) => {
+                self.state.plugin.there = false;
+                self.state.plugin.size = None;
+                self.state.plugin.job = None;
+                self.say(self.state.lang.pick(PLUGIN_GONE), now);
+            }
+            Err(why) => self.report(&why, now),
+        }
         self.refresh();
     }
 
@@ -6824,6 +6927,38 @@ impl App {
                 }
             }
             Action::Unavailable(text) => self.say(text, now),
+            // The full browser is a download like any other, only bigger and
+            // optional: it needs the network, and nothing it can do needs the
+            // owner's data open.
+            Action::GetPlugin => {
+                if self.state.plugin.job.as_ref().is_some_and(|j| j.outcome.is_none()) {
+                    return Vec::new();
+                }
+                if !self.state.online() {
+                    self.open(Screen::Wlan);
+                    return self.arrive_at(Screen::Wlan);
+                }
+                self.state.plugin.job = Some(PluginJob { stage: None, rate: 0, outcome: None, stopping: false });
+                self.refresh();
+                return vec![Effect::GetPlugin];
+            }
+            Action::StopPlugin => {
+                let job = self.state.plugin.job.as_mut().expect("only a download under way is stopped");
+                if job.outcome.is_none() && !job.stopping {
+                    job.stopping = true;
+                    self.refresh();
+                    return vec![Effect::StopPlugin];
+                }
+            }
+            // Taking it away is a second touch's worth of trouble only in
+            // that the download is big; it leaves nothing behind that the
+            // browser needs.
+            Action::DropPlugin => {
+                if self.state.plugin.there && !self.state.plugin.job.as_ref().is_some_and(|j| j.outcome.is_none()) {
+                    self.refresh();
+                    return vec![Effect::DropPlugin];
+                }
+            }
         }
         Vec::new()
     }

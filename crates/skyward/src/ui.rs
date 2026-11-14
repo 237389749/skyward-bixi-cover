@@ -39,7 +39,7 @@ use skyward_ui::app::{
     App, Asked, BackupAt, BackupEnd, BackupEntry, BackupRefusal, ClashChoice, Data, DownloadEnd, Effect, EraseStop, FileKind, FileOp,
     FileRow, FileTask, FsAction, FsRow, Have, Held, ImageSet, ItemEnd, ItemState, JobEnd, Keys, MountFailure, Part, PartKind, PartStop, Place,
     RenameRefused, Screen, Shot, Starter, SkywardEnd, SkywardStage, Target, Touch, UsbDrive, UsbLink, Wipe, DATA_OPENING,
-    DATA_PARTITION, DOWNLOADS, INSTALL_UNFINISHED, USB_DRIVE,
+    DATA_PARTITION, DOWNLOADS, INSTALL_UNFINISHED, PluginEnd, USB_DRIVE,
 };
 use skyward_ui::settings::Keeper;
 use skyward_ui::surface::kms::KmsSurface;
@@ -1866,6 +1866,10 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
     };
     let mut scanned_at = Instant::now();
     app.state.update_server = cfg.update.is_some();
+    // The full browser, where it was downloaded before, is looked for once:
+    // the page says it is there without downloading anything.
+    let plugin_there = crate::full::plugin();
+    app.plugin_seen(plugin_there.is_some(), None);
     // Asking the update server, and downloading the full package.
     let mut checker: Option<updates::Worker> = None;
     let mut downloader: Option<updates::Worker> = None;
@@ -1878,6 +1882,9 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
     let mut fetcher: Option<updates::Worker> = None;
     // Reading the page an address typed on the browser page holds.
     let mut browser_reader: Option<updates::Worker> = None;
+    // Downloading the full browser, and unpacking it where the browser page
+    // looks for it; or taking it away again.
+    let mut plugin_worker: Option<updates::Worker> = None;
     // The phone sleeps while its screen is off and nothing needs it awake.
     let sleeper = Sleeper::start()?;
     // A uevent may be a charger or a computer attached or taken away: the
@@ -2683,7 +2690,9 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                     | updates::Event::Writing { .. }
                     | updates::Event::Timed(_)
                     | updates::Event::Weighed(_)
-                    | updates::Event::Opened(_) => {
+                    | updates::Event::Opened(_)
+                    | updates::Event::Plugin(_)
+                    | updates::Event::Dropped(_) => {
                         unreachable!("a download asks nothing of its own, writes nothing, and reads no page")
                     }
                 }
@@ -2723,7 +2732,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                         app.skyward_ended(end, now);
                         updated = true;
                     }
-                    updates::Event::Checked(_) | updates::Event::SkywardChecked(_) | updates::Event::Timed(_) | updates::Event::Weighed(_) | updates::Event::Opened(_) => {
+                    updates::Event::Checked(_) | updates::Event::SkywardChecked(_) | updates::Event::Timed(_) | updates::Event::Weighed(_) | updates::Event::Opened(_) | updates::Event::Plugin(_) | updates::Event::Dropped(_) => {
                         unreachable!("an update asks nothing of its own")
                     }
                 }
@@ -2776,7 +2785,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                         app.fetch_ended(end, now);
                         taken = true;
                     }
-                    updates::Event::Checked(_) | updates::Event::SkywardChecked(_) | updates::Event::Writing { .. } | updates::Event::Timed(_) | updates::Event::Weighed(_) | updates::Event::Opened(_) => {
+                    updates::Event::Checked(_) | updates::Event::SkywardChecked(_) | updates::Event::Writing { .. } | updates::Event::Timed(_) | updates::Event::Weighed(_) | updates::Event::Opened(_) | updates::Event::Plugin(_) | updates::Event::Dropped(_) => {
                         unreachable!("taking a file from an address asks nothing, and writes nothing")
                     }
                 }
@@ -2784,6 +2793,42 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         }
         if taken {
             fetcher = None;
+        }
+        // The full browser, downloaded and unpacked, or taken away again:
+        // how far it has come, and what it came to.
+        let mut plugin_settled = false;
+        if let Some(p) = &plugin_worker {
+            for ev in p.events() {
+                match ev {
+                    updates::Event::Progress(progress, rate) => app.plugin_progress(progress, rate),
+                    updates::Event::Plugin(said) => {
+                        let end = match said {
+                            Ok(bytes) => PluginEnd::Installed(bytes),
+                            Err(why) if why == updates::PLUGIN_STOPPED => PluginEnd::Stopped,
+                            Err(why) => PluginEnd::Failed(why),
+                        };
+                        skyward_sys::kmsg(&format!("the full browser: {end:?}"))?;
+                        app.plugin_ended(end, now);
+                        plugin_settled = true;
+                    }
+                    updates::Event::Dropped(said) => {
+                        app.plugin_dropped(said, now);
+                        plugin_settled = true;
+                    }
+                    updates::Event::Checked(_)
+                    | updates::Event::SkywardChecked(_)
+                    | updates::Event::Writing { .. }
+                    | updates::Event::Timed(_)
+                    | updates::Event::Weighed(_)
+                    | updates::Event::Opened(_)
+                    | updates::Event::Ended(_) => {
+                        unreachable!("the plugin's download reports how it goes and how it ends, nothing else")
+                    }
+                }
+            }
+        }
+        if plugin_settled {
+            plugin_worker = None;
         }
         // The network says what time it is, and the bar shows it to the
         // second, so the answer is taken to correct the phone's clock once.
@@ -3510,6 +3555,31 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                         }
                         skyward_sys::kmsg(&format!("reading {url} as a page"))?;
                         browser_reader = Some(updates::Worker::start(updates::Task::Browse { url }, servers.clone())?);
+                    }
+                    // The full browser is a zip of a root filesystem with a
+                    // Chromium in it: downloaded where the package the next
+                    // update would download goes, then unpacked into the
+                    // folder the browser page looks for a plugin in.
+                    Effect::GetPlugin => {
+                        ensure!(plugin_worker.is_none(), "the plugin is being downloaded already");
+                        let url = match skyward_ui::app::MIRRORS.get(app.state.mirror).filter(|m| !m.is_empty()) {
+                            Some(mirror) => format!("{mirror}{}", updates::BROWSER_URL),
+                            None => updates::BROWSER_URL.to_string(),
+                        };
+                        let dir = crate::full::PLACES[0].to_string();
+                        let path = PathBuf::from(&dir).with_extension("zip");
+                        skyward_sys::kmsg(&format!("taking the full browser into {}", path.display()))?;
+                        let task = updates::Task::GetBrowser { url, path, dir: PathBuf::from(dir) };
+                        plugin_worker = Some(updates::Worker::start(task, servers.clone())?);
+                    }
+                    Effect::StopPlugin => plugin_worker.as_ref().context("the plugin is not being downloaded")?.stop(),
+                    Effect::DropPlugin => {
+                        ensure!(plugin_worker.is_none(), "the plugin is being downloaded");
+                        let dir = crate::full::PLACES[0].to_string();
+                        let path = PathBuf::from(&dir).with_extension("zip");
+                        skyward_sys::kmsg(&format!("taking the full browser at {} away", dir))?;
+                        let task = updates::Task::DropBrowser { dir: PathBuf::from(dir), path };
+                        plugin_worker = Some(updates::Worker::start(task, servers.clone())?);
                     }
                     // adbd reads the port once, as it starts; asked to listen
                     // on the network it is started again, which the cable's

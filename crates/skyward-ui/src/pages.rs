@@ -2,7 +2,7 @@ use crate::app::{
     Action, BackupAt, BackupEnd, BackupJob, Check, ClashChoice, Confirm, Damage, Data, Dock, DownloadEnd, EraseStop, Field, FileKind,
     FileOp, FileRow, FileTask, Fold, Folder, Frame, FsAction, FsChoice, FsRow, Have, HeroArt, Hit, Install, JobEnd, Keys, Pick, Place, Rows,
     Screen, Sheet, SkywardCheck, SkywardEnd, SkywardJob, SkywardStage, Slider, SortKey, Source, State, Switch, SystemsWork, Target, UsbDrive,
-    UsbLink, Weighing, Wipe, ADDABLE,
+    UsbLink, Weighing, Wipe, ADDABLE, PluginEnd,
     BACKUP_PARTS, DATA_ERASED, DATA_PARTITION, DOWNLOADS, FASTBOOT_CHOICES, SCREEN_OFF, TARGETS, TIME_ZONES, USB_DRIVE_UNREADABLE,
     USB_DRIVE_WANTED, WIPES, installs, starting, UrlKey,
 };
@@ -3115,6 +3115,7 @@ pub fn skyward_update(cx: &Ctx) -> Frame {
         out.extend(hits(&kept.rows, &[action]));
         y = kept.bottom;
     }
+    let y = skyward_plugin(&mut c, cx, y + t.m.card_gap, &mut out);
     let points = [
         l.pick([
             "新版本从 GitHub 下载，校验 SHA-256 后写入 recovery 分区，不会改动系统和用户数据。",
@@ -3248,6 +3249,73 @@ fn skyward_online(c: &mut Canvas, cx: &Ctx, y: f32, out: &mut Vec<Hit>) -> f32 {
             update.bottom
         }
     }
+}
+
+const PLUGIN_TITLE: Text = ["完整浏览器（可选）", "完整瀏覽器（可選）", "Full browser (optional)"];
+const PLUGIN_GET: Text = ["下载完整浏览器插件", "下載完整瀏覽器外掛", "Download the full browser plugin"];
+const PLUGIN_NOTE: Text = [
+    "用真正的 Chromium 打开网页，脚本生成的页面也能读；约 436 MB，只在需要时下载。不装不影响其它功能。",
+    "用真正的 Chromium 開啟網頁，腳本產生的頁面也能讀；約 436 MB，只在需要時下載。不裝不影響其它功能。",
+    "Pages are opened by a real Chromium, so a page its scripts build reads as the page it looks like. About 436 MB, downloaded only when wanted; nothing else needs it.",
+];
+const PLUGIN_INSTALLED: Text = ["已安装", "已安裝", "Installed"];
+const PLUGIN_IN_USE: Text = ["页面由 Chromium 打开", "頁面由 Chromium 開啟", "Pages are opened by Chromium"];
+const PLUGIN_DROP: Text = ["删除插件", "刪除外掛", "Delete the plugin"];
+const PLUGIN_DROP_NOTE: Text = [
+    "删除后回到纯文本阅读：HTML 里有的文字读得到，脚本生成的页面读不到。",
+    "刪除後回到純文字閱讀：HTML 裡有的文字讀得到，腳本產生的頁面讀不到。",
+    "Without it the browser reads text again: what the HTML holds, not what scripts build.",
+];
+
+/// The full browser the owner may keep on the phone. It is offered here
+/// rather than built in, because it is big and because nothing else needs
+/// it: a phone that never downloads it reads pages the plain way, exactly
+/// as before.
+fn skyward_plugin(c: &mut Canvas, cx: &Ctx, y: f32, out: &mut Vec<Hit>) -> f32 {
+    let (t, f, s, l) = (cx.t, cx.f, cx.state, cx.state.lang);
+    let gap = t.m.card_gap;
+    let mut y = widgets::section(c, t, f, y, l.pick(PLUGIN_TITLE));
+    if let Some(job) = s.plugin.job.as_ref().filter(|j| j.outcome.is_none()) {
+        let (heading, detail, part) = match job.stage {
+            None => (l.pick(GETTING_READY), String::new(), None),
+            Some(progress) => downloaded(l, progress, job.rate),
+        };
+        let y = widgets::progress_card(c, t, f, y, heading, &detail, part);
+        let stop = widgets::list(c, t, f, y + gap, &[Row::new(l.pick(if job.stopping { STOPPING } else { STOP })).trail(Trail::None)]);
+        if !job.stopping {
+            out.extend(hits(&stop.rows, &[Action::StopPlugin]));
+        }
+        return stop.bottom;
+    }
+    if s.plugin.there {
+        let detail = match s.plugin.size {
+            Some(bytes) if bytes > 0 => {
+                let size = fmt::file_size(bytes);
+                tr!(l, "占用 {size}", "佔用 {size}", "{size} on the phone")
+            }
+            _ => l.pick(PLUGIN_IN_USE).to_string(),
+        };
+        let installed = widgets::list(c, t, f, y, &[standing(l.pick(PLUGIN_INSTALLED), GREEN, Icon::Globe, &detail)]);
+        let drop = widgets::list(c, t, f, installed.bottom + gap, &[Row::new(l.pick(PLUGIN_DROP)).icon(RED, Icon::Wipe).trail(Trail::None)]);
+        out.extend(hits(&drop.rows, &[Action::DropPlugin]));
+        return widgets::footnote(c, t, f, drop.bottom, l.pick(PLUGIN_DROP_NOTE));
+    }
+    let mut y = y;
+    match s.plugin.job.as_ref().and_then(|j| j.outcome.as_ref()) {
+        Some(PluginEnd::Stopped) => y = widgets::footnote(c, t, f, y, l.pick(["已停止下载。", "已停止下載。", "Download stopped."])),
+        Some(PluginEnd::Failed(why)) => {
+            y = widgets::footnote(c, t, f, y, l.pick(["插件没有下载成功。", "外掛沒有下載成功。", "The plugin didn't download."]));
+            y = widgets::footnote(c, t, f, y, why);
+        }
+        Some(PluginEnd::Installed(_)) | None => {}
+    }
+    let mut row = Row::new(l.pick(PLUGIN_GET)).icon(BLUE, Icon::Download);
+    if !s.online() {
+        row = row.subtitle(l.pick(WLAN_FIRST));
+    }
+    let get = widgets::list(c, t, f, y, &[row]);
+    out.extend(hits(&get.rows, &[Action::GetPlugin]));
+    widgets::footnote(c, t, f, get.bottom, l.pick(PLUGIN_NOTE))
 }
 
 /// Asking this phone's network which mirror it reaches fastest: a slice of

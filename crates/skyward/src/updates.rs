@@ -4,7 +4,7 @@
 //! recovery partitions: on a thread of their own that tells the screen how
 //! far they have come.
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use skyward_install::upgrade;
 use skyward_net::download::{self, Damaged, Failure, NoRoom, Progress, Refused, Sum};
 use skyward_net::github::{self, Build, Newest};
@@ -33,6 +33,17 @@ const RATE_OVER: Duration = Duration::from_secs(3);
 /// the download gives up, and how long it waits between them.
 const TRIES: u32 = 5;
 const BETWEEN: Duration = Duration::from_secs(3);
+
+/// The full browser the browser page may be given: aurora's Chromium, a zip
+/// of a whole root filesystem with a Chromium in it. It is big, it is
+/// optional, and the exact one that was tried is named here, with its
+/// digest, so what comes is what was measured.
+pub const BROWSER_URL: &str = "https://github.com/Jamvii/skyward-for-aurora/releases/download/browser-v0.3.4-aurora/chromium.zip";
+const BROWSER_SHA256: &str = "9e6df85255386eb962bbe6b1ad5e0d2505c7b5ba02a9d7d89d3d20a778f14ea2";
+
+/// What the plugin download says when it was stopped rather than failed: the
+/// page tells the two apart, and one of them is not a failure.
+pub const PLUGIN_STOPPED: &str = "the download was stopped";
 
 pub enum Task {
     /// Ask `server` for the newest system for `installed`. Where that
@@ -69,6 +80,12 @@ pub enum Task {
     /// checked as Skyward for the phone `codename` names first: the build
     /// was not downloaded here, but goes in the same way.
     Write { path: PathBuf, codename: String },
+    /// Download the full browser into `path` and unpack it into `dir`: a
+    /// Chromium the browser page can draw a page with, which the owner
+    /// chooses to have and can take away again.
+    GetBrowser { url: String, path: PathBuf, dir: PathBuf },
+    /// Take the full browser off the phone again.
+    DropBrowser { dir: PathBuf, path: PathBuf },
 }
 
 pub enum Event {
@@ -91,6 +108,11 @@ pub enum Event {
     /// What `url` held: a page read, a file it turned out to be, or why
     /// neither.
     Opened(Result<web::Opened, String>),
+    /// The full browser is on the phone and takes this many bytes, or why it
+    /// did not get there.
+    Plugin(Result<u64, String>),
+    /// The full browser is off the phone again, or why it is not.
+    Dropped(Result<(), String>),
     Ended(End),
 }
 
@@ -254,8 +276,8 @@ impl Worker {
                     Task::Browse { url } => {
                         let a = http::agent(servers.clone());
                         *using.lock().expect("the agent is not held by a thread that panicked") = Some(a.clone());
-                        let drawn = match full::plugin() {
-                            Some(root) => match full::dom(&root, &url) {
+                        let drawn = match crate::full::plugin() {
+                            Some(root) => match crate::full::dom(&root, &url) {
                                 Ok(html) => Some(web::rendered(&a, &url, &html)),
                                 Err(e) => {
                                     let _ = skyward_sys::kmsg(&format!("drawing {url} with the plugin: {e:#}"));
@@ -269,6 +291,47 @@ impl Worker {
                             None => web::open(&a, &url).map_err(|e| format!("{e:#}")),
                         };
                         tell(Event::Opened(opened));
+                    }
+                    // The full browser is a zip of a whole root filesystem:
+                    // downloaded, its digest checked, then unpacked where the
+                    // browser page looks for it, and the zip taken away
+                    // again, since it is of no use once it is unpacked. What
+                    // the plugin takes on the phone is told, not the zip's
+                    // size: the two are not the same.
+                    Task::GetBrowser { url, path, dir } => {
+                        let mut refused = |_: &ureq::Agent| Again::Retry;
+                        let sum = Sum::Sha256(BROWSER_SHA256.to_string());
+                        let end = fetch(&servers, vec![url.clone()], &sum, "chromium.zip", &path, &stopping, &using, &tell, &mut refused);
+                        let said = match end {
+                            End::Downloaded => unpack(&path, &dir).map_err(|e| format!("{e:#}")),
+                            End::Stopped => Err(PLUGIN_STOPPED.to_string()),
+                            End::Failed(why) => Err(format!("the download did not end whole: {why:?}")),
+                            _ => Err("the download did not end with the plugin whole".to_string()),
+                        };
+                        if said.is_ok() {
+                            let _ = fs::remove_file(&path);
+                        }
+                        tell(Event::Plugin(said));
+                    }
+                    // Taking the plugin away leaves the phone as it was before
+                    // it was downloaded: the browser reads pages the plain way
+                    // again, with the text their HTML holds.
+                    Task::DropBrowser { dir, path } => {
+                        let gone = (|| -> Result<()> {
+                            match fs::remove_dir_all(&dir) {
+                                Ok(()) => {}
+                                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                                Err(e) => return Err(e).with_context(|| format!("take {} away", dir.display())),
+                            }
+                            match fs::remove_file(&path) {
+                                Ok(()) => {}
+                                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                                Err(e) => return Err(e).with_context(|| format!("take {} away", path.display())),
+                            }
+                            Ok(())
+                        })()
+                        .map_err(|e| format!("{e:#}"));
+                        tell(Event::Dropped(gone));
                     }
                     // The build was not downloaded here: it is kept in a place
                     // the user chose, and its image is checked to be Skyward
@@ -358,6 +421,42 @@ enum Again {
     /// Try again, as after any other failure.
     Retry,
     End(End),
+}
+
+/// Unpack the plugin `zip` into `dir`, and answer with what it takes there.
+/// A name that would reach outside `dir` is refused rather than written
+/// where it points, and the modes the zip carries are kept: the Chromium in
+/// it has to be run, and a file that lost its `x` cannot be.
+fn unpack(zip: &Path, dir: &Path) -> Result<u64> {
+    use std::os::unix::fs::PermissionsExt;
+    let file = fs::File::open(zip).with_context(|| format!("open {}", zip.display()))?;
+    let mut archive = zip::ZipArchive::new(file).with_context(|| format!("read {} as a zip", zip.display()))?;
+    fs::create_dir_all(dir).with_context(|| format!("make {}", dir.display()))?;
+    let mut bytes = 0u64;
+    for at in 0..archive.len() {
+        let mut entry = archive.by_index(at).with_context(|| format!("the zip's entry {at}"))?;
+        let Some(name) = entry.enclosed_name() else {
+            bail!("{} holds a name that leaves where it is unpacked", zip.display());
+        };
+        let to = dir.join(&name);
+        if entry.is_dir() {
+            fs::create_dir_all(&to).with_context(|| format!("make {}", to.display()))?;
+            continue;
+        }
+        if let Some(parent) = to.parent() {
+            fs::create_dir_all(parent).with_context(|| format!("make {}", parent.display()))?;
+        }
+        let written = {
+            let mut out = fs::File::create(&to).with_context(|| format!("write {}", to.display()))?;
+            std::io::copy(&mut entry, &mut out).with_context(|| format!("unpack {}", to.display()))?;
+            out.metadata().map(|m| m.len()).unwrap_or(0)
+        };
+        bytes += written;
+        if let Some(mode) = entry.unix_mode() {
+            let _ = fs::set_permissions(&to, fs::Permissions::from_mode(mode));
+        }
+    }
+    Ok(bytes)
 }
 
 /// Download the package `name`, whose digest is `sum`, to `path`, from

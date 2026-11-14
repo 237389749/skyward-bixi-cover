@@ -21,7 +21,7 @@ use anyhow::{Context, Result, bail};
 /// Where the plugin is looked for, in the order the owner is likelier to
 /// have put it. The first is the plugin's own README's place; the second is
 /// the same directory seen through the running system's storage.
-const PLACES: [&str; 2] = ["/data/media/0/Skyward/plugins/chromium", "/sdcard/Skyward/plugins/chromium"];
+pub const PLACES: [&str; 2] = ["/data/media/0/Skyward/plugins/chromium", "/sdcard/Skyward/plugins/chromium"];
 
 /// The one file that has to be there for the plugin to be a plugin.
 const CHROMIUM: &str = "usr/lib/chromium/chromium";

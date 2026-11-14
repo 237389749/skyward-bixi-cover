@@ -112,3 +112,36 @@ Arabic 一开始是豆腐块，但同一份 rootfs 之后重跑就正常了—�
 - **图片真渲染。** DOM 里的 `<img>` 现在是 `Block::Image{alt,url,data,…}`，
   UI 侧仍只画一行「［图片］alt」；要真画图得加 PNG/JPEG 解码和
   `Canvas` 的任意尺寸 blit，还没做。
+
+## 七、插件从哪里来：更新页上的「完整浏览器（可选）」
+
+插件不随 recovery 一起打包，它太大（zip 457 339 582 B，解开 1.0 GB），
+而且不是每个用户都需要。它放在「更新 → 在线更新」下面，由用户自己决定：
+
+- **未装**：一行「下载完整浏览器插件」＋副标题（约 436 MB、脚本页也能读）。
+- **下载中**：进度卡（已下载 / 全部、速率）＋「停止」。
+- **已装**：一行「已安装 · 占用 X」＋一行红色「删除插件」。
+
+下载走「在线更新」页选的镜像前缀（与更新用的是同一个 `MIRRORS`，
+没选镜像时直连 GitHub），落到
+`<插件目录>/chromium.zip`，校验 SHA-256
+`9e6df85255386eb962bbe6b1ad5e0d2505c7b5ba02a9d7d89d3d20a778f14ea2`
+（与 release 的 digest 一致，真机实测 457 339 582 B），然后用
+`zip::ZipArchive` 就地解到 `/data/media/0/Skyward/plugins/chromium`，
+按 `unix_mode()` 还原权限（Chromium 得能执行），越界名一律拒绝，
+解完把 zip 删掉。
+
+**为什么不自动装、也不默认装**：一份 436 MB 的下载、1 GB 的落盘，只有
+用户自己说要才值得花；不装的机器行为与以前完全一样，一行代码都不变。
+
+**为什么下载路径和 `plugin_recopy.sh` 的做法一致**：`adb push` 上去的 zip
+用设备自带 `unzip` 解是唯一验证过的路径；`cp -a` 从 `/data/local/tmp` 拷到
+`/data/media/0` 会把 `bin/busybox` 拷坏（md5 对不上，首 4 字节全 0，
+chroot 报 `Exec format error`）。所以 zip 落盘位置与插件目录同在
+`/data/media/0` 下，解压不跨文件系统。
+
+**删除**是 `remove_dir_all` + `remove_file`，NotFound 当成功（重复点不会报错）。
+删完 `full::plugin()` 返回 `None`，浏览器自动退回纯文本，不需要重启。
+
+**已知未验**：recovery 里这条下载路径没有真机跑过（Android 侧跑过等价流程），
+首次真机点「下载」时请一并看 `/proc/kmsg` 里的 `taking the full browser into …`。
