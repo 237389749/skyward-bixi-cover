@@ -213,7 +213,10 @@ pub fn open_without_credential(service: &KeyMint) -> Result<Opening> {
     let mut closed = Vec::new();
     let mut owner = Note::default();
     for user in open_users(service)? {
-        let protector = protector(user)?;
+        // A user who never set a screen lock keeps no secret at all, so
+        // there is nothing of theirs to open: leaving them out is the
+        // whole of their case, and no reason to fail the others.
+        let Some(protector) = protector(user)? else { continue };
         match protector.lock {
             None => {
                 let note = open_user_files(service, user, None, None)?;
@@ -332,8 +335,16 @@ const PROTECTORS: &str = "/data/system_de";
 /// credential before can still be used. Which of them the user's current
 /// credential opens is the phone's own business, and it writes that down,
 /// so this reads it rather than guess.
-fn protector(user: u32) -> Result<crate::user::Protector> {
+/// What the phone keeps of user `user`'s own secret, where it keeps one:
+/// the blob, what it is bound to, and what the phone recorded of the
+/// credential that opens it. `Ok(None)` for a user who never set a screen
+/// lock, whose folder is not written at all — there is then nothing to
+/// open, and that is not a failure.
+fn protector(user: u32) -> Result<Option<crate::user::Protector>> {
     let dir = blobs(user);
+    if !dir.try_exists().with_context(|| format!("look for {}", dir.display()))? {
+        return Ok(None);
+    }
     let mut ids = Vec::new();
     for entry in std::fs::read_dir(&dir).with_context(|| format!("read {}", dir.display()))? {
         let path = entry.with_context(|| format!("read {}", dir.display()))?.path();
@@ -382,12 +393,12 @@ fn protector(user: u32) -> Result<crate::user::Protector> {
             std::fs::read(dir.join(format!("{id}.secdis"))).with_context(|| format!("read what the blob in {} is bound to", dir.display()))?,
         ),
     };
-    Ok(crate::user::Protector {
+    Ok(Some(crate::user::Protector {
         blob: std::fs::read(dir.join(format!("{id}.spblob"))).with_context(|| format!("read the blob in {}", dir.display()))?,
         bound,
         id,
         lock,
-    })
+    }))
 }
 
 /// Which of the secure world's slots a user's enrolments sit in. What the
@@ -403,6 +414,10 @@ const BLOBS: &str = "spblob";
 const SECRET_HANDLE: &str = "0000000000000000.handle";
 
 /// Where a user's blobs are.
+/// Where a phone keeps what it needs to recover a user's own secret, and
+/// what such a secret may be kept as: `spblob` where the phone holds it in
+/// a blob, which is only written once a screen lock is set. A user who
+/// never set one has no folder here at all.
 fn blobs(user: u32) -> PathBuf {
     Path::new(PROTECTORS).join(user.to_string()).join(BLOBS)
 }
@@ -467,7 +482,7 @@ const TAG_BYTES: usize = 16;
 /// owner's own secret gave. The owner's files open, their shared storage
 /// shows at /sdcard.
 fn open_user_files(service: &KeyMint, user: u32, credential: Option<&[u8]>, owner: Option<&Token>) -> Result<Note> {
-    let protector = protector(user)?;
+    let protector = protector(user)?.with_context(|| format!("user {user} has set no screen lock, and kept no secret to open"))?;
     let stretched = match &protector.lock {
         Some(lock) => {
             let typed = match made_up_credential(service, user, &protector.id, owner)? {
