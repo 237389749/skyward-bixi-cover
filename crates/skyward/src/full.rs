@@ -1,0 +1,188 @@
+//! The browser's full mode: the phone's owner puts a Chromium on it, and
+//! Skyward asks that Chromium to draw a page and hand back what it came to.
+//!
+//! Nothing here is needed for the browser to work. The plugin is a root
+//! filesystem on the owner's storage with `usr/lib/chromium/chromium` in it;
+//! when it is there, a page is read as the page a browser draws, scripts and
+//! all, and the DOM it hands back is read the same way an answer's own HTML
+//! is. When it is not there, or when it cannot start, the address is fetched
+//! the plain way and the page is the text its HTML holds.
+
+use std::io::Read;
+use std::os::unix::process::CommandExt;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use anyhow::{Context, Result, bail};
+
+/// Where the plugin is looked for, in the order the owner is likelier to
+/// have put it. The first is the plugin's own README's place; the second is
+/// the same directory seen through the running system's storage.
+const PLACES: [&str; 2] = ["/data/media/0/Skyward/plugins/chromium", "/sdcard/Skyward/plugins/chromium"];
+
+/// The one file that has to be there for the plugin to be a plugin.
+const CHROMIUM: &str = "usr/lib/chromium/chromium";
+
+/// How long a page is given to come back. A recovery has nothing to do with
+/// a browser that will not answer, and the owner is holding the phone.
+const BUDGET: Duration = Duration::from_secs(30);
+
+/// The flags a drawn page is read with: no sandbox (a recovery is already
+/// root and has no user namespaces), no GPU (there is no display), the
+/// profile and the scratch in the plugin's own `/tmp`, and the DOM on
+/// stdout once the page's own scripts have had their turn.
+const FLAGS: [&str; 17] = [
+    "--headless=new",
+    "--no-sandbox",
+    "--disable-gpu",
+    "--disable-dev-shm-usage",
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--disable-background-networking",
+    "--disable-component-update",
+    "--disable-crash-reporter",
+    "--disable-breakpad",
+    "--ignore-certificate-errors",
+    "--disable-quic",
+    "--disable-dns-prefetch",
+    "--disable-features=AsyncDns",
+    "--hide-scrollbars",
+    "--virtual-time-budget=5000",
+    "--dump-dom",
+];
+
+/// The plugin, if the owner has put one on the phone.
+pub fn plugin() -> Option<PathBuf> {
+    PLACES.iter().map(Path::new).find(|place| place.join(CHROMIUM).is_file()).map(Path::to_path_buf)
+}
+
+/// The plugin `root` is on this phone and can draw a page: the two shelves
+/// it writes in are there, and the three places of the running system it
+/// has to see are bound into it. A place bound by an earlier page is left
+/// bound: binding it twice fails, and so would every page after.
+pub fn ready(root: &Path) -> Result<()> {
+    for made in ["tmp", "tmp/given", "tmp/xdg", "tmp/cache", "tmp/config"] {
+        std::fs::create_dir_all(root.join(made)).with_context(|| format!("make the plugin's {made}"))?;
+    }
+    for bound in ["dev", "proc", "sys"] {
+        let at = root.join(bound);
+        std::fs::create_dir_all(&at).with_context(|| format!("make the plugin's {bound}"))?;
+        if is_mount(&at) {
+            continue;
+        }
+        let from = format!("/{bound}");
+        if unsafe { bind(&from, &at.to_string_lossy()) } != 0 {
+            return Err(std::io::Error::last_os_error()).with_context(|| format!("bind {from} into the plugin"));
+        }
+    }
+    // Answers have to be looked up the way the recovery looks them up: the
+    // plugin's own resolver file is what its Chromium reads. The recovery's
+    // is written into it when the plugin has none of its own.
+    let resolv = root.join("etc/resolv.conf");
+    if let Ok(host) = std::fs::read_to_string("/etc/resolv.conf") {
+        let mine = std::fs::read_to_string(&resolv).unwrap_or_default();
+        if !host.trim().is_empty() && mine.trim().is_empty() {
+            let _ = std::fs::write(&resolv, host);
+        }
+    }
+    Ok(())
+}
+
+/// Whether `at` already has something mounted on it, as the kernel's own
+/// mount table says.
+fn is_mount(at: &Path) -> bool {
+    let Ok(table) = std::fs::read_to_string("/proc/self/mountinfo") else { return false };
+    let at = at.to_string_lossy();
+    table.lines().any(|line| line.split_whitespace().nth(4) == Some(at.as_ref()))
+}
+
+/// Bind `from` onto `at` the way the plugin's own `run.sh` would with
+/// `mount`: the kernel call, so the recovery does not need a `mount` of its
+/// own to reach it.
+unsafe fn bind(from: &str, at: &str) -> i32 {
+    let source = std::ffi::CString::new(from).expect("a path without a NUL");
+    let target = std::ffi::CString::new(at).expect("a path without a NUL");
+    unsafe { libc::mount(source.as_ptr(), target.as_ptr(), std::ptr::null(), libc::MS_BIND | libc::MS_REC, std::ptr::null()) }
+}
+
+/// The DOM `url` comes to with the plugin at `root` drawing it, the page
+/// given `BUDGET` and then hung up, its whole process group with it: a page
+/// that will not load must not hold the browser's own loop.
+pub fn dom(root: &Path, url: &str) -> Result<String> {
+    ready(root)?;
+    let mut command = Command::new("/usr/lib/chromium/chromium");
+    command
+        .args(FLAGS)
+        .arg(format!("--user-data-dir={}", root.join("tmp/given").display()))
+        .arg(url)
+        .env_clear()
+        .env("PATH", "/bin:/usr/bin:/usr/sbin")
+        .env("HOME", "/root")
+        .env("TMPDIR", "/tmp")
+        .env("XDG_RUNTIME_DIR", "/tmp/xdg")
+        .env("XDG_CACHE_HOME", "/tmp/cache")
+        .env("XDG_CONFIG_HOME", "/tmp/config")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let root = root.to_path_buf();
+    unsafe {
+        command.pre_exec(move || {
+            let dir = std::ffi::CString::new(root.to_string_lossy().as_bytes()).expect("a path without a NUL");
+            if libc::chroot(dir.as_ptr()) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if libc::chdir(c"/".as_ptr()) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            // Its own session, so hanging it up takes what it started too,
+            // and nothing of it outlives the page it was asked for.
+            if libc::setsid() < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut child = command.spawn().with_context(|| format!("start the plugin to draw {url}"))?;
+    let pid = child.id() as i32;
+    let done = Arc::new(AtomicBool::new(false));
+    let hung = Arc::new(AtomicBool::new(false));
+    {
+        let (done, hung) = (done.clone(), hung.clone());
+        std::thread::Builder::new().name("browser-full-cut".into()).spawn(move || {
+            let started = Instant::now();
+            while !done.load(Ordering::Relaxed) && started.elapsed() < BUDGET {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            if !done.load(Ordering::Relaxed) {
+                hung.store(true, Ordering::Relaxed);
+                // The whole group: Chromium starts a few processes of its own.
+                unsafe { libc::kill(-pid, libc::SIGKILL) };
+            }
+        })?;
+    }
+    let mut out = String::new();
+    let read = child
+        .stdout
+        .take()
+        .context("the plugin's answer")?
+        .read_to_string(&mut out)
+        .with_context(|| format!("read what the plugin drew for {url}"));
+    done.store(true, Ordering::Relaxed);
+    let status = child.wait().with_context(|| format!("wait for the plugin drawing {url}"));
+    if hung.load(Ordering::Relaxed) {
+        bail!("the plugin did not answer within {} seconds, so it was hung up", BUDGET.as_secs());
+    }
+    read?;
+    let status = status?;
+    if !status.success() {
+        bail!("the plugin gave up drawing {url}: {status}");
+    }
+    if out.trim().is_empty() {
+        bail!("the plugin drew {url} and handed back nothing");
+    }
+    Ok(out)
+}

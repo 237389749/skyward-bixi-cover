@@ -244,10 +244,30 @@ impl Worker {
                     // asks for a file: one address, and the answer kept as
                     // what it turns out to be. A read that fails is told as
                     // why, so the page can say it.
+                    //
+                    // When the owner has put a Chromium on the phone, that
+                    // Chromium draws the page first and the DOM it hands back
+                    // is read instead of the answer's own HTML: a page whose
+                    // text its scripts build comes out as the page it looks
+                    // like. A plugin that cannot start is no reason to lose
+                    // the page, so the plain read is what is left.
                     Task::Browse { url } => {
                         let a = http::agent(servers.clone());
                         *using.lock().expect("the agent is not held by a thread that panicked") = Some(a.clone());
-                        let opened = web::open(&a, &url).map_err(|e| format!("{e:#}"));
+                        let drawn = match full::plugin() {
+                            Some(root) => match full::dom(&root, &url) {
+                                Ok(html) => Some(web::rendered(&a, &url, &html)),
+                                Err(e) => {
+                                    let _ = skyward_sys::kmsg(&format!("drawing {url} with the plugin: {e:#}"));
+                                    None
+                                }
+                            },
+                            None => None,
+                        };
+                        let opened = match drawn {
+                            Some(page) => Ok(web::Opened::Page(page)),
+                            None => web::open(&a, &url).map_err(|e| format!("{e:#}")),
+                        };
                         tell(Event::Opened(opened));
                     }
                     // The build was not downloaded here: it is kept in a place

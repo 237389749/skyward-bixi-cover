@@ -268,6 +268,16 @@ pub fn open_with(agent: &ureq::Agent, url: &str, cookie: Option<&str>) -> Result
     read_answer(agent, response, url)
 }
 
+/// Read `url` from HTML someone else fetched and something else ran: what a
+/// browser that draws the page hands back once its scripts have had their
+/// turn. The page is read the same way an answer's own HTML is, pictures
+/// included, so a page a script built comes out as the page it looks like.
+pub fn rendered(agent: &ureq::Agent, url: &str, html: &str) -> Page {
+    let mut page = parse(url, html, false);
+    fetch_images(agent, &mut page);
+    page
+}
+
 /// Send a form, as the page asks: its fields in the address for a GET, and
 /// in the body for a POST.
 pub fn submit(
@@ -1637,6 +1647,28 @@ mod tests {
         assert!(page.blocks.iter().any(|b| matches!(b, Block::Bullet { text, .. } if text == "First")));
         assert!(page.blocks.contains(&Block::Link { label: "Download the ROM".into(), url: "https://example.com/download/rom.zip".into(), download: true, style: Style::default() }));
         assert!(page.blocks.contains(&Block::Link { label: "Other page".into(), url: "https://example.com/a/other.html".into(), download: false, style: Style::default() }));
+    }
+
+    #[test]
+    fn a_page_a_browser_drew_is_read_as_the_page_it_shows() {
+        // What a Chromium hands back for a page whose text its scripts built:
+        // the DOM, not the answer's own HTML. It is read as a page, the same
+        // way, so what the scripts wrote is what the browser shows.
+        let html = "<html><head><title>Built by a script</title></head><body>\
+                    <h2>What the script wrote</h2><p>Text a reader can read.</p>\
+                    <a href=\"/from/script\">A link the script added</a></body></html>";
+        let agent = ureq::Agent::new_with_defaults();
+        let page = rendered(&agent, "https://example.com/page", html);
+        assert_eq!(page.title, "Built by a script");
+        assert_eq!(page.url, "https://example.com/page");
+        assert!(page.blocks.iter().any(|b| matches!(b, Block::Heading { level: 2, text, .. } if text == "What the script wrote")));
+        assert!(page.blocks.iter().any(|b| matches!(b, Block::Paragraph { text, .. } if text == "Text a reader can read.")));
+        assert!(page.blocks.contains(&Block::Link {
+            label: "A link the script added".into(),
+            url: "https://example.com/from/script".into(),
+            download: false,
+            style: Style::default(),
+        }));
     }
 
     #[test]
