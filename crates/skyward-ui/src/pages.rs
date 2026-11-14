@@ -3300,7 +3300,6 @@ fn skyward_plugin(c: &mut Canvas, cx: &Ctx, y: f32, out: &mut Vec<Hit>) -> f32 {
         out.extend(hits(&drop.rows, &[Action::DropPlugin]));
         return widgets::footnote(c, t, f, drop.bottom, l.pick(PLUGIN_DROP_NOTE));
     }
-    let mut y = y;
     match s.plugin.job.as_ref().and_then(|j| j.outcome.as_ref()) {
         Some(PluginEnd::Stopped) => y = widgets::footnote(c, t, f, y, l.pick(["已停止下载。", "已停止下載。", "Download stopped."])),
         Some(PluginEnd::Failed(why)) => {
