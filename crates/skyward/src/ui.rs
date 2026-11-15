@@ -3601,7 +3601,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                         // runs the worker, so it is the one that can tell the
                         // page it is gone.
                         let stuck = plugin_worker.is_none()
-                            && app.state.plugin.job.as_ref().map_or(false, |job| job.outcome.is_none());
+                            && app.state.plugin.job.as_ref().is_some_and(|job| job.outcome.is_none());
                         if stuck {
                             app.plugin_ended(PluginEnd::Failed("the download stopped without saying how it went".into()), now);
                         }

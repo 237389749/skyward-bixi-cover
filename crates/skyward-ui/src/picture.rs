@@ -36,19 +36,32 @@ fn png(data: &[u8]) -> Option<Picture> {
     let src = &buf[..info.buffer_size()];
     let pixels = match info.color_type {
         png::ColorType::Rgba => src.to_vec(),
-        png::ColorType::Rgb => src.chunks_exact(3).flat_map(|p| [p[0], p[1], p[2], 255]).collect(),
+        png::ColorType::Rgb => four(src, 3, |p| [p[0], p[1], p[2], 255]),
         png::ColorType::Grayscale => src.iter().flat_map(|&g| [g, g, g, 255]).collect(),
-        png::ColorType::GrayscaleAlpha => src.chunks_exact(2).flat_map(|p| [p[0], p[0], p[0], p[1]]).collect(),
+        png::ColorType::GrayscaleAlpha => four(src, 2, |p| [p[0], p[0], p[0], p[1]]),
         png::ColorType::Indexed => return None,
     };
     Some(Picture { w: info.width, h: info.height, pixels })
+}
+
+/// `src` read `n` bytes at a time, each group turned into one RGBA pixel:
+/// the shapes a PNG and a JPEG come in are all a fixed number of channels
+/// a pixel, and only the last of them is the alpha a picture keeps.
+fn four(src: &[u8], n: usize, of: impl Fn(&[u8]) -> [u8; 4]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(src.len() / n * 4);
+    let mut at = 0;
+    while at + n <= src.len() {
+        out.extend_from_slice(&of(&src[at..at + n]));
+        at += n;
+    }
+    out
 }
 
 fn jpeg(data: &[u8]) -> Option<Picture> {
     let mut decoder = jpeg_decoder::Decoder::new(Cursor::new(data));
     let rgb = decoder.decode().ok()?;
     let info = decoder.info()?;
-    let pixels = rgb.chunks_exact(3).flat_map(|p| [p[0], p[1], p[2], 255]).collect();
+    let pixels = four(&rgb, 3, |p| [p[0], p[1], p[2], 255]);
     Some(Picture { w: info.width as u32, h: info.height as u32, pixels })
 }
 

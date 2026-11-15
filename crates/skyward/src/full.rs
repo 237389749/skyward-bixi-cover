@@ -209,7 +209,7 @@ pub fn dom(root: &Path, url: &str) -> Result<String> {
     }
     if out.trim().is_empty() {
         let excuse = excuse();
-        let excuse = if excuse.is_empty() { String::new() } else { format!("; it said: {excuse}" };
+        let excuse = if excuse.is_empty() { String::new() } else { format!("; it said: {excuse}") };
         bail!("the plugin drew {url} and handed back nothing{excuse}");
     }
     Ok(out)
