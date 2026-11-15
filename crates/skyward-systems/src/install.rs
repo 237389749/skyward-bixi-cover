@@ -188,14 +188,12 @@ mod sys {
             };
             if let Err(why) = guard::written_over(by_name(), &state, slot) {
                 // The three things the guard compares are all about the
-                // installed system's slot — slot.other(): its boot set
+                // installed system's slot, `slot.other()`: its boot set
                 // against what was saved, its vendor_boot and dtbo against
                 // what was installed against. So the slot that was written
                 // over, and the one to start, is the one the other system is
-                // not in. Starting `slot` would start the other system again
-                // while the state says it is gone, and in remove()'s case
-                // with the root it is just about to delete.
-                return start_as_it_is(slot.other(), &why);
+                // not in; `start_as_it_is` picks it.
+                return start_as_it_is(slot, &why);
             }
         }
         let (path, program) = (Path::new(PATH), program());
@@ -216,7 +214,7 @@ mod sys {
     /// not something the other system has to start for.
     fn switch_back_for_erase(state: &State, slot: Slot) -> Result<()> {
         if let Err(why) = guard::written_over(by_name(), state, slot) {
-            return start_as_it_is(slot.other(), &why);
+            return start_as_it_is(slot, &why);
         }
         let (path, program) = (Path::new(PATH), program());
         writable(|| with_store(state, |device| switch::switch(&Places { state: path, by_name: by_name(), store: device, program: &program }, slot, Who::Installed)))
@@ -227,11 +225,12 @@ mod sys {
     /// own boot image beside its own system and vendor, and that set starts
     /// itself and merges what an update left to merge as it does.
     ///
-    /// `slot` is the installed system's — the one the guard found written
-    /// over, never the one the other system's boot set is in: starting that
-    /// one after its boot set was let go of would start a system the state
-    /// no longer says is there, and in [`Self::remove`] with the root it is
-    /// about to delete.
+    /// `slot` is the slot the other system's boot set is in — what
+    /// [`guard::written_over`] said was written over — and the slot that
+    /// starts is the other one, where the installed system is: starting
+    /// `slot` itself would start the other system after its boot set was
+    /// let go of, which the state no longer says is there, and in
+    /// [`Self::remove`] with the root it is about to delete.
     ///
     /// This is what a switch back does when the saved copy is not the boot
     /// set the partitions hold any more. Writing the copy back — which is
@@ -242,12 +241,13 @@ mod sys {
     /// and said in kmsg, so a phone that then starts from an updated slot
     /// has an account of why it started as it was.
     fn start_as_it_is(slot: Slot, why: &anyhow::Error) -> Result<()> {
+        let installed = guard::start_from(slot);
         let (binder, hardware) = (skyward_binder::driver::Binder::open()?, skyward_binder::driver::Binder::hardware()?);
         let control = skyward_vab::boot::BootControl::open(&binder, &hardware)?;
-        control.set_active(slot)?;
+        control.set_active(installed)?;
         let _ = skyward_sys::kmsg(&format!(
             "the installed system's partitions were written over ({why:#}); slot {} starts as it is, and the saved boot set is let go rather than written back",
-            slot.letter()
+            installed.letter()
         ));
         writable(|| {
             let path = Path::new(PATH);

@@ -119,6 +119,17 @@ pub(crate) fn written_over(by_name: &Path, state: &State, slot: Slot) -> Result<
     Ok(())
 }
 
+/// The slot to start where the saved copy is not the boot set the
+/// partitions hold any more: the installed system's, which is the other one
+/// from `occupied`, the slot the other system's boot set is in.
+///
+/// Starting `occupied` instead would start the other system after its boot
+/// set was let go of — a system the state no longer says is there, and the
+/// one whose root [`crate::install::remove`] is about to delete.
+pub(crate) fn start_from(occupied: Slot) -> Slot {
+    occupied.other()
+}
+
 /// What is let go of when the saved copy is not the boot set the partitions
 /// hold any more: the copy, and the slot the other system's boot set was in.
 /// What is installed stays — the other system can be switched to again, its
@@ -215,6 +226,14 @@ mod tests {
         let why = written_over(&at, &state, Slot::B).unwrap_err();
         assert!(format!("{why:#}").contains("installing it again is the safe way back"), "says what to do: {why:#}");
         assert!(changed(&at, &state, Slot::A).unwrap(), "the other system's boot set leaving slot B is a change");
+    }
+
+    #[test]
+    fn a_slot_started_as_it_stands_is_the_installed_systems_not_the_other_ones() {
+        // The boot control itself is only reachable on a phone; what is
+        // decided here is which slot it is told to start.
+        assert_eq!(start_from(Slot::B), Slot::A, "the other system is in B, so the updated installed system is in A");
+        assert_eq!(start_from(Slot::A), Slot::B, "and the other way round");
     }
 
     #[test]
