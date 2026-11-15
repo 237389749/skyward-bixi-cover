@@ -119,6 +119,19 @@ pub(crate) fn written_over(by_name: &Path, state: &State, slot: Slot) -> Result<
     Ok(())
 }
 
+/// What is let go of when the saved copy is not the boot set the partitions
+/// hold any more: the copy, and the slot the other system's boot set was in.
+/// What is installed stays — the other system can be switched to again, its
+/// boot set written into the slot that starts next out of the store — but
+/// nothing is left that says a switch back has a boot set to write.
+///
+/// Only the state is touched here, so this half of starting a slot as it
+/// stands can be tried without a phone: the boot control is the other half.
+pub(crate) fn let_go(state: &mut State) {
+    state.occupied = None;
+    state.saved = None;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -202,5 +215,23 @@ mod tests {
         let why = written_over(&at, &state, Slot::B).unwrap_err();
         assert!(format!("{why:#}").contains("installing it again is the safe way back"), "says what to do: {why:#}");
         assert!(changed(&at, &state, Slot::A).unwrap(), "the other system's boot set leaving slot B is a change");
+    }
+
+    #[test]
+    fn letting_go_of_the_saved_set_keeps_what_is_installed() {
+        let (_dir, _at, state) = phone(b"old boot", b"other system boot");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("systems.toml");
+        state.save(&path).unwrap();
+        let mut loaded = State::load(&path).unwrap();
+        assert_eq!(loaded.occupied.as_deref(), Some("_b"));
+        assert!(loaded.saved.is_some());
+        let_go(&mut loaded);
+        loaded.save(&path).unwrap();
+        let after = State::load(&path).unwrap();
+        assert!(after.occupied.is_none(), "nothing is in a slot as its own boot set any more");
+        assert!(after.saved.is_none(), "there is no copy left to write back");
+        assert!(after.system.is_some(), "the other system stays installed, to be switched to again");
+        assert_eq!(after.system.unwrap().set.boot, Sha256::digest(b"other system boot").iter().map(|b| format!("{b:02x}")).collect::<String>(), "its own boot set is still what the store holds");
     }
 }

@@ -187,7 +187,15 @@ mod sys {
                 None => next,
             };
             if let Err(why) = guard::written_over(by_name(), &state, slot) {
-                return start_as_it_is(slot, &why);
+                // The three things the guard compares are all about the
+                // installed system's slot — slot.other(): its boot set
+                // against what was saved, its vendor_boot and dtbo against
+                // what was installed against. So the slot that was written
+                // over, and the one to start, is the one the other system is
+                // not in. Starting `slot` would start the other system again
+                // while the state says it is gone, and in remove()'s case
+                // with the root it is just about to delete.
+                return start_as_it_is(slot.other(), &why);
             }
         }
         let (path, program) = (Path::new(PATH), program());
@@ -208,7 +216,7 @@ mod sys {
     /// not something the other system has to start for.
     fn switch_back_for_erase(state: &State, slot: Slot) -> Result<()> {
         if let Err(why) = guard::written_over(by_name(), state, slot) {
-            return start_as_it_is(slot, &why);
+            return start_as_it_is(slot.other(), &why);
         }
         let (path, program) = (Path::new(PATH), program());
         writable(|| with_store(state, |device| switch::switch(&Places { state: path, by_name: by_name(), store: device, program: &program }, slot, Who::Installed)))
@@ -218,6 +226,12 @@ mod sys {
     /// what is in its partitions is the system that was updated there, its
     /// own boot image beside its own system and vendor, and that set starts
     /// itself and merges what an update left to merge as it does.
+    ///
+    /// `slot` is the installed system's — the one the guard found written
+    /// over, never the one the other system's boot set is in: starting that
+    /// one after its boot set was let go of would start a system the state
+    /// no longer says is there, and in [`Self::remove`] with the root it is
+    /// about to delete.
     ///
     /// This is what a switch back does when the saved copy is not the boot
     /// set the partitions hold any more. Writing the copy back — which is
@@ -238,8 +252,7 @@ mod sys {
         writable(|| {
             let path = Path::new(PATH);
             let mut now = State::load(path)?;
-            now.occupied = None;
-            now.saved = None;
+            guard::let_go(&mut now);
             now.save(path)
         })
     }
