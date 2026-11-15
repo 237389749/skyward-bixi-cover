@@ -2044,13 +2044,13 @@ impl UrlKey {
 /// the files it hands out, so they answer which release is the newest too;
 /// the last one only carries the files. `github.akams.cn` was taken out on
 /// 2026-11-14: it answers 404 for every release asset, as the mirror watch
-/// found twice, two days apart.
-pub const MIRRORS: [&str; 5] = [
+/// found twice, two days apart. `ghfast.top` came out on 2026-11-15: the
+/// check and the download both time out through it, timed twice, at 06:00.
+pub const MIRRORS: [&str; 4] = [
     "",
     "https://gh-proxy.com/",
     "https://gh-proxy.org/",
     "https://gh-proxy.cc/",
-    "https://ghfast.top/",
 ];
 
 /// A mirror only helps on GitHub's own hosts, so an address there is
@@ -12394,7 +12394,7 @@ mod tests {
         app.mirrors_weighed(rates.clone());
         assert_eq!(app.state.mirror, 2, "the quickest of them is the one taken");
         assert_eq!(app.state.weighing, Weighing::Weighed(rates));
-        app.mirrors_weighed(vec![0; 5]);
+        app.mirrors_weighed(vec![0; MIRRORS.len()]);
         assert_eq!(app.state.mirror, 2, "none answering leaves the one chosen as it was");
         app.skyward_checked(Ok(skyward_newest(false)));
         assert!(!app.frame(&f, &i).hits.iter().any(|h| h.action == Action::WeighMirrors), "nothing to time without a build");

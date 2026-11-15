@@ -101,10 +101,31 @@ pub fn ready(root: &Path) -> Result<()> {
 
 /// Whether `at` already has something mounted on it, as the kernel's own
 /// mount table says.
+///
+/// The table names a mount by the path the kernel had for it when it was
+/// made, and the plugin's place on the data partition is not always named
+/// the same way: a shelf under `/data/media/0` is written down under
+/// `/mnt/pass_through/0`, so comparing the two names as text misses every
+/// bind an earlier page made. Then every page binds again, and each page
+/// leaves three more mounts of /dev, /proc and /sys behind — ten and more,
+/// on a phone that had opened the plugin ten times. The place is compared
+/// by what is there instead: the device and the inode a mount lands on
+/// are the same however the path to it is spelled.
 fn is_mount(at: &Path) -> bool {
     let Ok(table) = std::fs::read_to_string("/proc/self/mountinfo") else { return false };
-    let at = at.to_string_lossy();
-    table.lines().any(|line| line.split_whitespace().nth(4) == Some(at.as_ref()))
+    let Some(mine) = identity(at) else { return false };
+    table.lines().any(|line| {
+        let Some(target) = line.split_whitespace().nth(4) else { return false };
+        identity(Path::new(target)) == Some(mine)
+    })
+}
+
+/// What tells a place apart from another place that has the same path spelled
+/// differently: the device it is on and its inode there.
+fn identity(at: &Path) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    let meta = std::fs::metadata(at).ok()?;
+    Some((meta.dev(), meta.ino()))
 }
 
 /// Bind `from` onto `at` the way the plugin's own `run.sh` would with
