@@ -145,7 +145,7 @@ pub fn confirm_label(which: Confirm, s: &State) -> (&'static str, bool) {
         Confirm::Relabel => (["滑动以修复", "滑動以修復", "Slide to fix"], true),
         Confirm::SwitchSystem => (["滑动以切换并重启", "滑動以切換並重新啟動", "Slide to switch and reboot"], false),
         Confirm::RemoveSystem => (["滑动以删除", "滑動以刪除", "Slide to remove"], true),
-        Confirm::ForgetSystem(_) => (["滑动以清理", "滑動以清理", "Slide to take it back"], true),
+        Confirm::ForgetSystem => (["滑动以清理", "滑動以清理", "Slide to take it back"], true),
         Confirm::InstallSystem => (INSTALL, false),
     };
     (s.lang.pick(label), danger)
@@ -4940,14 +4940,14 @@ pub fn systems(cx: &Ctx) -> Frame {
             ]),
         };
         y = widgets::footnote(&mut c, t, f, list.bottom, note);
-        if let (true, Some(at)) = (mounted, s.asking_forget) {
-            if let Some(forgotten) = systems.forgotten.get(at) {
+        if mounted {
+            if let Some(forgotten) = s.asking_forget.as_deref().and_then(|id| systems.forgotten.iter().find(|forgotten| forgotten.id == id)) {
                 let (name, size) = (forgotten.name.as_str(), fmt::bytes(forgotten.size));
                 let ask = tr!(l, "清理「{name}」会归还 {size}，镜像里的数据一起没，无法恢复。", "清理「{name}」會歸還 {size}，映像檔裡的資料一起沒，無法復原。", "Taking “{name}” back gives {size} to the data partition, and the data in its image goes with it for good.");
                 let y2 = widgets::footnote(&mut c, t, f, y, &ask);
-                let (label, danger) = confirm_label(Confirm::ForgetSystem(at), s);
+                let (label, danger) = confirm_label(Confirm::ForgetSystem, s);
                 let track = widgets::confirm(&mut c, t, f, y2 + t.m.dp(24.0), label, danger, s.confirm);
-                out.push(Hit { rect: track, action: Action::Confirm(Confirm::ForgetSystem(at)) });
+                out.push(Hit { rect: track, action: Action::Confirm(Confirm::ForgetSystem) });
                 y = track.y + track.h;
             }
         }

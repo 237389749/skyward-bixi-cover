@@ -1688,6 +1688,12 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
     // A switch the system asked for, under way; then the phone starts the
     // system switched to.
     let mut switch_asked = false;
+    // The systems have been read once at startup: a switch cut off before is
+    // finished then, and the read that goes with it fills in what the home
+    // page and the systems page say. Sent once, not every frame — reading the
+    // state for every frame would mount /metadata and read it for nothing,
+    // and only its own mount is left to fastbootd.
+    let mut systems_started = false;
     // A switch went through and the phone is restarting into the system.
     let mut switched = false;
     // fastbootd may write the boot partitions, which the installed system's
@@ -1800,9 +1806,13 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         Work::Menu | Work::Exit | Work::Fastboot | Work::PromptWipeData | Work::Unsupported(_) => {}
     }
     // A switch asked for finishes one cut off before itself; fastboot leaves
-    // /metadata to fastbootd until the recovery's pages come up.
+    // /metadata to fastbootd until the recovery's pages come up, so nothing
+    // reads it while it is the one the phone goes to.
     if let (Some(worker), false, false) = (systems_worker.as_mut(), switch_asked, fastboot) {
-        worker.send(systems::Task::Resume);
+        if !systems_started {
+            worker.send(systems::Task::Resume);
+            systems_started = true;
+        }
     }
     // The port came up with adb alone; at rest it offers file transfer
     // beside it.

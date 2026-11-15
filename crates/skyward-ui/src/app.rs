@@ -1212,7 +1212,7 @@ pub enum Confirm {
     RemoveSystem,
     /// Take away the room a system a write over its slot left behind still
     /// takes, at this place in the list of them the systems page shows.
-    ForgetSystem(usize),
+    ForgetSystem,
     /// Install the system the installer holds with the room chosen.
     InstallSystem,
 }
@@ -2236,9 +2236,9 @@ pub struct State {
     /// page shows, was asked for; a swipe confirms it.
     pub asking_delete: bool,
     /// Taking away the room a system written over still takes was asked for,
-    /// with the place in the list of them the systems page shows; a swipe
-    /// confirms it.
-    pub asking_forget: Option<usize>,
+    /// naming that system by its id — not by its place in the list, which a
+    /// read of the systems can reorder before the swipe lands.
+    pub asking_forget: Option<String>,
     /// A copy or move waiting on what to do with the names taken where it
     /// goes, and those names.
     pub clash: Option<(Clip, String, Vec<String>)>,
@@ -6305,7 +6305,11 @@ impl App {
                 self.refresh();
             }
             Action::AskForget(at) => {
-                self.state.asking_forget = Some(at);
+                if let Some(Ok(systems)) = &self.state.systems {
+                    if let Some(forgotten) = systems.forgotten.get(at) {
+                        self.state.asking_forget = Some(forgotten.id.clone());
+                    }
+                }
                 self.state.asking_delete = false;
                 self.state.confirm = 0.0;
                 self.refresh();
@@ -7935,15 +7939,12 @@ impl App {
                 self.state.system_pick = None;
                 self.refresh();
             }
-            Confirm::ForgetSystem(at) => {
-                if let Some(Ok(systems)) = &self.state.systems {
-                    if let Some(forgotten) = systems.forgotten.get(at) {
-                        fx.push(Effect::ForgetSystem(forgotten.id.clone()));
-                        self.state.systems_work = Some(SystemsWork::Forgetting);
-                        self.state.asking_forget = None;
-                        self.state.confirm = 0.0;
-                        self.refresh();
-                    }
+            Confirm::ForgetSystem => {
+                if let Some(id) = self.state.asking_forget.take() {
+                    fx.push(Effect::ForgetSystem(id));
+                    self.state.systems_work = Some(SystemsWork::Forgetting);
+                    self.state.confirm = 0.0;
+                    self.refresh();
                 }
             }
             Confirm::InstallSystem => {

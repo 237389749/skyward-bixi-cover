@@ -559,8 +559,12 @@ mod sys {
     /// system partitions change under it — while the record still names roots
     /// those writes left in the data partition; the systems page is the only
     /// place that can give that room back, so it is offered for this alone.
+    ///
+    /// Nothing is mounted to answer it: `/metadata` is left as the caller
+    /// found it, because fastbootd has to be handed it that way, and a state
+    /// that cannot be read is one that names nothing.
     pub fn left_behind() -> bool {
-        metadata().is_ok() && State::load(Path::new(PATH)).map(|state| !state.forgotten.is_empty()).unwrap_or(false)
+        State::load(Path::new(PATH)).map(|state| !state.forgotten.is_empty()).unwrap_or(false)
     }
 
     /// Take away one of the systems a write over its slot left behind: its
