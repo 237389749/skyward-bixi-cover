@@ -84,7 +84,7 @@ mod sys {
     use skyward_block::area::{self, Area};
     use skyward_block::{dm, BY_NAME};
     use skyward_vab::Slot;
-    use std::fs::{self, File, OpenOptions};
+    use std::fs::{self, OpenOptions};
     use std::io::{Read, Seek, SeekFrom, Write};
     use std::path::{Path, PathBuf};
     use zip::ZipArchive;
