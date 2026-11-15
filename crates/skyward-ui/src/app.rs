@@ -9237,7 +9237,7 @@ mod tests {
         let (f, i) = (fonts(), info());
         let mut app = App::new(Screen::Advanced, W, H, PPD);
         app.set_update(Standing::Waiting);
-        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Update)), vec![Effect::ReadUpdate], "the page reads where the update stands");
+        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Update)), vec![Effect::ReadUpdate, Effect::ReadPlugin], "the page reads where the update stands, and looks again for the full browser");
         assert_eq!(app.screen(), Screen::Update);
         assert_eq!(swipe(&mut app, &f, &i, Confirm::Merge), vec![Effect::Merge]);
         assert_eq!(app.state.update, Standing::Merging(0.0), "the page turns to the merge at once");
@@ -9258,7 +9258,7 @@ mod tests {
         let (f, mut i) = (fonts(), info());
         i.snapshot = SnapshotState::Snapshotted;
         let mut app = App::new(Screen::Home, W, H, PPD);
-        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Update)), vec![Effect::ReadUpdate]);
+        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Update)), vec![Effect::ReadUpdate, Effect::ReadPlugin]);
         assert_eq!(app.screen(), Screen::Update);
     }
 
@@ -12273,7 +12273,7 @@ mod tests {
         app.state.update_server = true;
         app.state.wlan = Some(Wlan::default());
         app.refresh();
-        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Update)), vec![Effect::ReadUpdate], "nothing is asked without a network");
+        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Update)), vec![Effect::ReadUpdate, Effect::ReadPlugin], "nothing is asked without a network");
         assert!(tap(&mut app, &f, &i, Action::CheckUpdate).is_empty());
         assert_eq!(app.screen(), Screen::Wlan, "asking takes a network, which the WLAN page joins");
         app.key(Key::Back, 0);
@@ -12312,13 +12312,13 @@ mod tests {
         let (f, i) = (fonts(), info());
         let mut app = App::new(Screen::Advanced, W, H, PPD);
         app.state.wlan = Some(connected("Skyward"));
-        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Update)), vec![Effect::ReadUpdate], "a phone whose server is not known asks nothing");
+        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Update)), vec![Effect::ReadUpdate, Effect::ReadPlugin], "a phone whose server is not known asks nothing");
         app.key(Key::Back, 0);
         app.state.update_server = true;
-        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Update)), vec![Effect::ReadUpdate, Effect::CheckUpdate]);
+        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Update)), vec![Effect::ReadUpdate, Effect::ReadPlugin, Effect::CheckUpdate]);
         app.update_checked(Err(Unanswered::Failed("update.miui.com did not answer".into())), Have::Nothing);
         app.key(Key::Back, 0);
-        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Update)), vec![Effect::ReadUpdate, Effect::CheckUpdate], "a failed check is tried again");
+        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Update)), vec![Effect::ReadUpdate, Effect::ReadPlugin, Effect::CheckUpdate], "a failed check is tried again");
     }
 
     fn skyward_newest(newer: bool) -> Newest {
