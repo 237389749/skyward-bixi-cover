@@ -12,6 +12,7 @@ sha2 = "0.10.9"
 skyward-block = { path = "../skyward-block" }
 skyward-bootimg = { path = "../skyward-bootimg" }
 skyward-config = { path = "../skyward-config" }
+skyward-sys = { path = "../skyward-sys" }
 skyward-vab = { path = "../skyward-vab" }
 toml = { workspace = true }
 zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }

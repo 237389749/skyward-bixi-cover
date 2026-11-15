@@ -351,7 +351,7 @@ fn protector_in(dir: &Path, user: u32) -> Result<Option<crate::user::Protector>>
         return Ok(None);
     }
     let mut ids = Vec::new();
-    for entry in std::fs::read_dir(&dir).with_context(|| format!("read {}", dir.display()))? {
+    for entry in std::fs::read_dir(dir).with_context(|| format!("read {}", dir.display()))? {
         let path = entry.with_context(|| format!("read {}", dir.display()))?.path();
         if path.extension().is_some_and(|e| e == "spblob") {
             if let Some(id) = path.file_stem().and_then(|s| s.to_str()) {
