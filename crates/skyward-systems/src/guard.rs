@@ -143,18 +143,25 @@ pub(crate) fn start_from(occupied: Slot) -> Slot {
 /// system saves whatever is in the slot now as the installed system's copy,
 /// which is how a phone ends up starting the other system every time.
 ///
-/// Its root is not let go of, though: the area is still in the data
+/// The room it takes is not let go of, though: the area is still in the data
 /// partition, taking the room it takes, and a reinstall of the same package
-/// looks for the very file it is in. So it moves to `forgotten` — no longer
+/// looks for the very file it is in. So it goes on `forgotten` — no longer
 /// an installed system, still an area to be taken away — and `why` says what
-/// wrote over it, for the page and for [`let_go_at`]'s kmsg.
+/// wrote over it, for the page and for [`let_go_at`]'s kmsg. What was
+/// forgotten before stays on the list beside it: it is still an area, and
+/// nothing else would name it.
 ///
 /// Only the state is touched here, so this half of starting a slot as it
 /// stands can be tried without a phone: the boot control is the other half.
 pub(crate) fn let_go(state: &mut State, why: &str) {
     state.occupied = None;
     state.saved = None;
-    state.forgotten = state.system.take().map(|system| Forgotten { id: system.id, root: system.root, why: why.to_string() });
+    if let Some(system) = state.system.take() {
+        // Pushed, not put in place of what is there: an entry left from an
+        // earlier system is still an area taking room, and writing over it
+        // would lose the name of that one for good.
+        state.forgotten.push(Forgotten { id: system.id, root: system.root, why: why.to_string() });
+    }
 }
 
 /// The state as it is left after [`let_go`], loaded, let go of and saved at
@@ -162,9 +169,11 @@ pub(crate) fn let_go(state: &mut State, why: &str) {
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub(crate) fn let_go_at(path: &std::path::Path, why: &str) -> Result<Option<String>> {
     let mut state = State::load(path)?;
+    let before = state.forgotten.len();
     let_go(&mut state, why);
+    let id = state.forgotten.get(before).map(|forgotten| forgotten.id.clone());
     state.save(path)?;
-    Ok(state.forgotten.map(|forgotten| forgotten.id))
+    Ok(id)
 }
 
 #[cfg(test)]
@@ -276,9 +285,26 @@ pub(crate) mod tests {
         assert!(after.occupied.is_none(), "nothing is in a slot as its own boot set any more");
         assert!(after.saved.is_none(), "there is no copy left to write back");
         assert!(after.system.is_none(), "the other system's boot set is gone from where it was, so its record goes with it");
-        let forgotten = after.forgotten.expect("its root is still in the data partition, taking the room it takes");
+        assert_eq!(after.forgotten.len(), 1, "one system was let go of, so one room is named");
+        let forgotten = after.forgotten.into_iter().next().expect("its root is still in the data partition, taking the room it takes");
         assert_eq!(forgotten.root, root, "the file a reinstall of the same package would find is the one named here");
         assert!(forgotten.why.contains("update"), "why it was let go of: {}", forgotten.why);
+    }
+
+    #[test]
+    fn letting_go_of_another_system_keeps_what_was_let_go_of_before() {
+        // Forgetting one and installing another is a way a second entry
+        // is reached: the earlier room is still an area, and nothing else
+        // names it, so a new one is added beside it rather than in its place.
+        let (_dir, _at, mut state) = phone(b"old boot", b"other system boot");
+        let earlier = state.system.as_ref().unwrap().root.clone();
+        state.forgotten.push(Forgotten { id: "earlier".into(), root: earlier.clone(), why: "an update wrote over it".into() });
+        let now = state.system.as_ref().unwrap().root.clone();
+        let_go(&mut state, "an update wrote over it");
+        assert_eq!(state.forgotten.len(), 2, "both rooms are named");
+        assert_eq!(state.forgotten[0].id, "earlier", "the one let go of before is still first");
+        assert_eq!(state.forgotten[0].root, earlier, "and still names its own file");
+        assert_eq!(state.forgotten[1].root, now, "the one let go of now names the one it was installed in");
     }
 
     #[test]
@@ -293,6 +319,6 @@ pub(crate) mod tests {
         assert_eq!(said.as_deref(), Some(id.as_str()), "says whose room is now forgotten");
         let after = State::load(&path).unwrap();
         assert!(after.occupied.is_none() && after.saved.is_none() && after.system.is_none(), "nothing of it starts any more");
-        assert_eq!(after.forgotten.map(|forgotten| forgotten.root), Some(root), "the room it takes is still named after the save it was written in");
+        assert_eq!(after.forgotten.into_iter().next().map(|forgotten| forgotten.root), Some(root), "the room it takes is still named after the save it was written in");
     }
 }

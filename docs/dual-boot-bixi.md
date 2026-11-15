@@ -171,16 +171,22 @@ occupied 槽的另一槽），`saved` 作废，并把**第二系统的记录**�
 用户看到的是系统页回到「未安装第二系统」。要用就重装：`install` 会复用
 `/data/skyward/systems` 里那份 store（`state.store` 还留着）。旧 root 不会凭空消失，
 它被记进 `systems.toml` 的 `forgotten`（`id` + `Area` + 一句 `why`），也就是「已经不是
-装着的系统，但仍是一块占着地方的 area」：
+装着的系统，但仍是一块占着地方的 area」。`forgotten` 是**表**，不是单个：
 
-- 重装**同一个包**（同 `id`）时，`install_now` 先按 `forgotten.root` 把它删掉再
-  `area::create`；否则 `create_new` 会在 `/data/skyward/systems/<id>.img` 上直接失败，
-  报错还看不出是残留文件；
+- 重装**同一个包**（同 `id`）时，`install_now` 先按 `forgotten.root` 把它删掉，**然后才
+  数 `/data` 还剩多少**；顺序很重要——那块 area 的字节还在 data 里，先数房间会得出
+  「只剩 18 GB、装不下你的 20 GB」，而删掉那 20 GB 就够，用户连删都不许删。删完再
+  `area::create`，`create_new` 也不会在 `/data/skyward/systems/<id>.img` 上直接失败；
 - 走 `remove()`（卸掉第二系统）时，`remove()` 在切换**之前**就把 `state.system` 和
-  `state.forgotten` 里的 root 都取出来，切完一并删，所以经 `remove()` 不会留孤儿；
+  `state.forgotten` 里**每一条**的 root 都取出来，切完一并删，所以经 `remove()` 不会留
+  孤儿；
 - 只被 OTA 覆盖、既没重装同 id 也没走 `remove()` 的话，那块 area 一直占着空间，需要
   人工删 `/data/skyward/systems/<id>.img`。页面上还没有「清掉它」的按钮，这一步目前
-  只能人工做（`docs` 记着，等页面接上 `forgotten` 再补）。
+  只能人工做（`docs` 记着，等页面接上 `forgotten` 再补；接的时候每条要有 `size` 才能
+  让用户看见「还占 20 GB」再点删）。
+- 被忘掉的系统不会互相盖掉：一条已经 forgotten、用户又装了**另一个 id** 的第二系统、
+  再被 OTA 覆盖一次时，第二条是**追加**进表的，旧那条的 root 仍然有名字。所以页面要按
+  表遍历求和，不能只显示第一条。
 
 ## 6. 验收清单（等主人点头再做，按顺序）
 

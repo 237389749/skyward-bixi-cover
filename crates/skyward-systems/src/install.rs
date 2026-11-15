@@ -330,9 +330,24 @@ mod sys {
         ensure!(state.switching.is_none(), "a switch begun before is not done yet");
         ensure!(state.system.is_none(), "another system is installed already");
         ensure!(size >= contents.least(), "a root of {size} bytes is less than the {} the system takes", contents.least());
+        let folder = Path::new(FOLDER);
+        let id = contents.manifest.id.clone();
+        let file = folder.join(format!("{id}.img"));
+        // A system that was written over leaves its root behind, named in the
+        // state as forgotten; installing the same package again looks for that
+        // very file, and `area::create` will not make one where one is. It is
+        // taken away before the room is counted, because it is the room this
+        // install is about to take: the bytes it holds are still in the
+        // partition, so counting first would answer "there is room for less
+        // than this" to a phone where taking those bytes back is all that is
+        // needed — and would not even let it try.
+        if let Some(at) = state.forgotten.iter().position(|forgotten| forgotten.id == id) {
+            let forgotten = state.forgotten.remove(at);
+            forgotten.root.remove().context("take away the room the system it replaces was left in")?;
+            state.save(path)?;
+        }
         let room = room_now(slot)?;
         ensure!(size <= room, "the data partition has room for {room} bytes, less than {size}");
-        let folder = Path::new(FOLDER);
         fs::create_dir_all(folder).with_context(|| format!("make {}", folder.display()))?;
         if state.store.is_none() {
             let (boot, init_boot) = (skyward_block::size_bytes(store::partition(by_name(), store::BOOT, slot))?, skyward_block::size_bytes(store::partition(by_name(), store::INIT_BOOT, slot))?);
@@ -340,20 +355,8 @@ mod sys {
             state.store = Some(Store { area, boot, init_boot });
             state.save(path)?;
         }
-        let id = contents.manifest.id.clone();
-        let file = folder.join(format!("{id}.img"));
-        // A system that was written over leaves its root behind, named in
-        // the state as forgotten; installing the same package again looks
-        // for that very file, and `area::create` will not make one where one
-        // is. So it is taken away first — it is the room this install is
-        // about to take, and nothing starts it any more. A file left by
-        // something else, of the same name, is taken away too rather than
-        // failing an install of several gigabytes over it.
-        if state.forgotten.as_ref().is_some_and(|forgotten| forgotten.id == id) {
-            let forgotten = state.forgotten.take().expect("just taken as the same id");
-            forgotten.root.remove().context("take away the room the system it replaces was left in")?;
-            state.save(path)?;
-        }
+        // A file left at the path by anything else is taken away too, rather
+        // than failing an install of several gigabytes over it.
         if file.exists() {
             fs::remove_file(&file).with_context(|| format!("take away what is left at {}", file.display()))?;
         }
@@ -462,7 +465,7 @@ mod sys {
         // the call that was asked to take everything away, so the root is kept
         // here rather than read out of the state afterwards.
         let root = state.system.as_ref().map(|system| system.root.clone());
-        let forgotten = state.forgotten.as_ref().map(|forgotten| forgotten.root.clone());
+        let forgotten: Vec<_> = state.forgotten.iter().map(|forgotten| forgotten.root.clone()).collect();
         if let Some(suffix) = state.occupied.as_deref() {
             let slot = Slot::from_suffix(suffix).with_context(|| format!("the other system is in slot {suffix:?}"))?;
             switch_back_for_erase(&state, slot)?;
@@ -473,14 +476,14 @@ mod sys {
             if let Some(root) = &root {
                 root.remove()?;
             }
-            if let Some(forgotten) = &forgotten {
+            for forgotten in &forgotten {
                 forgotten.remove()?;
             }
-            if state.system.is_some() || state.occupied.is_some() || state.saved.is_some() || state.forgotten.is_some() {
+            if state.system.is_some() || state.occupied.is_some() || state.saved.is_some() || !state.forgotten.is_empty() {
                 state.system = None;
                 state.occupied = None;
                 state.saved = None;
-                state.forgotten = None;
+                state.forgotten.clear();
                 state.save(path)?;
             }
             if let Some(store) = &state.store {

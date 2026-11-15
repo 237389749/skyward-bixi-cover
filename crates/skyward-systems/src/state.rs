@@ -27,13 +27,15 @@ pub struct State {
     pub occupied: Option<String>,
     /// A switch begun and not yet done.
     pub switching: Option<Switching>,
-    /// The other system as it was when something wrote over the slot its
-    /// boot set was in: its record is no longer true of anything that
-    /// starts, but its root is still in the data partition, taking the room
-    /// it takes, and a reinstall of the same package would find the file
-    /// where it wants to make one.
+    /// The systems as they were where something wrote over the slot their
+    /// boot sets were in: their records are no longer true of anything that
+    /// starts, but their roots are still in the data partition, taking the
+    /// room they take, and a reinstall of one of those packages would find
+    /// the file where it wants to make one. A list, not one, because
+    /// forgetting one and installing another is a way a second entry is
+    /// reached.
     #[serde(default)]
-    pub forgotten: Option<Forgotten>,
+    pub forgotten: Vec<Forgotten>,
 }
 
 /// The other system as it was left behind: what it was, the root it still
@@ -188,7 +190,7 @@ pub(crate) mod tests {
             }),
             occupied: Some("_a".into()),
             switching: Some(Switching { to: Who::Installed, slot: "_a".into(), saved: false }),
-            forgotten: Some(Forgotten { id: "gone".into(), root: area("/data/skyward/systems/gone", 1 << 20), why: "an update wrote over it".into() }),
+            forgotten: vec![Forgotten { id: "gone".into(), root: area("/data/skyward/systems/gone", 1 << 20), why: "an update wrote over it".into() }],
         };
         state.save(&path).unwrap();
         assert_eq!(State::load(&path).unwrap(), state);
