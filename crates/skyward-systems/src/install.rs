@@ -52,6 +52,16 @@ pub fn overview(state: &State, installed: Named, changed: bool) -> Overview {
         other: state.system.as_ref().map(|s| Other { id: s.id.clone(), name: s.name.clone(), version: s.version.clone(), size: s.root.size - HEADER }),
         other_starts: state.occupied.is_some(),
         changed,
+        forgotten: state
+            .forgotten
+            .iter()
+            .map(|forgotten| ForgottenSystem {
+                id: forgotten.id.clone(),
+                name: if forgotten.name.is_empty() { forgotten.id.clone() } else { forgotten.name.clone() },
+                size: forgotten.root.size - HEADER,
+                why: forgotten.why.clone(),
+            })
+            .collect(),
     }
 }
 
@@ -79,6 +89,18 @@ fn start_at(control: &dyn skyward_vab::Starting, occupied: skyward_vab::Slot) ->
     let installed = crate::guard::start_from(occupied);
     control.set_active(installed)?;
     Ok(installed)
+}
+
+/// Start the slot that was written over, and let the state go of the
+/// installed system's saved copy and of the other system's record, naming
+/// the room it still takes: the two halves of starting a slot as it stands,
+/// one after the other, and both of them things a test can ask for — the
+/// control is handed in and the state is a file at `path`.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn start_as_it_stands(control: &dyn skyward_vab::Starting, occupied: skyward_vab::Slot, path: &std::path::Path, why: &str) -> anyhow::Result<(skyward_vab::Slot, Option<String>)> {
+    let installed = start_at(control, occupied)?;
+    let left = crate::guard::let_go_at(path, why)?;
+    Ok((installed, left))
 }
 
 #[cfg(target_os = "android")]
@@ -138,7 +160,15 @@ mod sys {
     /// `work` on it, and take the device away again.
     fn with_store<T>(state: &State, work: impl FnOnce(&Path) -> Result<T>) -> Result<T> {
         let store = state.store.as_ref().context("no store holds the boot sets")?;
-        store.area.check_header()?;
+        if let Err(why) = store.area.check_header() {
+            // /data can be cleared while /metadata keeps the record that names
+            // the store there: the record then points at bytes that are gone.
+            // Nothing can be reached through it, and saying what happened is
+            // the only way the screen's "couldn't switch" line can be
+            // understood; installing the other system again makes a new store.
+            let _ = skyward_sys::kmsg(&format!("the store the record names is not in the data partition ({why:#}); the systems it holds are gone with the data partition"));
+            return Err(anyhow::anyhow!("the data partition no longer holds the store the systems were installed in ({why:#}); install the other system again to make one"));
+        }
         if dm::status(STORE_DEVICE)?.is_some() {
             dm::remove(STORE_DEVICE)?;
         }
@@ -263,10 +293,25 @@ mod sys {
     fn start_as_it_is(slot: Slot, why: &anyhow::Error) -> Result<()> {
         let (binder, hardware) = (skyward_binder::driver::Binder::open()?, skyward_binder::driver::Binder::hardware()?);
         let control = skyward_vab::boot::BootControl::open(&binder, &hardware)?;
-        let installed = start_at(&control, slot)?;
-        let left = writable(|| guard::let_go_at(Path::new(PATH), &format!("{why:#}")))?;
+        let said = format!("{why:#}");
+        let (installed, left) = match writable(|| start_as_it_stands(&control, slot, Path::new(PATH), &said)) {
+            Ok(done) => done,
+            Err(e) => {
+                // The slot is where the phone starts from now, and the state
+                // still says otherwise: the page will show the systems as
+                // they were read before this. Saying so is all that can be
+                // done from here — switching again repeats it, and the guard
+                // still finds the slot written over, so it comes back to this
+                // same place rather than writing anything back.
+                let _ = skyward_sys::kmsg(&format!(
+                    "slot {} starts as it stands, but what the state says could not be written ({e:#}); the systems page shows what it said before until the slot is switched again",
+                    crate::guard::start_from(slot).letter()
+                ));
+                return Err(e);
+            }
+        };
         let _ = skyward_sys::kmsg(&format!(
-            "the installed system's partitions were written over ({why:#}); slot {} starts as it is, its boot set let go of rather than written back, and the other system's record goes with it{} - it is to be installed again",
+            "the installed system's partitions were written over ({said}); slot {} starts as it is, its boot set let go of rather than written back, and the other system's record goes with it{} - it is to be installed again",
             installed.letter(),
             match &left {
                 Some(id) => format!(", its root left in the data partition as {id} until it is installed again or taken away"),
@@ -347,7 +392,18 @@ mod sys {
             state.save(path)?;
         }
         let room = room_now(slot)?;
-        ensure!(size <= room, "the data partition has room for {room} bytes, less than {size}");
+        ensure!(
+            size <= room,
+            "the data partition has room for {room} bytes, less than {size}{}",
+            match state.forgotten.is_empty() {
+                true => String::new(),
+                false => format!(
+                    "; {} system(s) written over still take {} there, and can be taken back on the systems page",
+                    state.forgotten.len(),
+                    state.forgotten.iter().map(|forgotten| forgotten.root.size).sum::<u64>()
+                ),
+            }
+        );
         fs::create_dir_all(folder).with_context(|| format!("make {}", folder.display()))?;
         if state.store.is_none() {
             let (boot, init_boot) = (skyward_block::size_bytes(store::partition(by_name(), store::BOOT, slot))?, skyward_block::size_bytes(store::partition(by_name(), store::INIT_BOOT, slot))?);
@@ -459,25 +515,24 @@ mod sys {
         ensure!(skyward_block::mount::is_mount_point(data())?, "the data partition is not open");
         resume()?;
         let state = state()?;
-        // Where the switch back finds the partitions written over, it lets go
-        // of the other system's record along with the saved copy; the root it
-        // leaves behind is named in the state as forgotten then, and this is
-        // the call that was asked to take everything away, so the root is kept
-        // here rather than read out of the state afterwards.
-        let root = state.system.as_ref().map(|system| system.root.clone());
-        let forgotten: Vec<_> = state.forgotten.iter().map(|forgotten| forgotten.root.clone()).collect();
         if let Some(suffix) = state.occupied.as_deref() {
             let slot = Slot::from_suffix(suffix).with_context(|| format!("the other system is in slot {suffix:?}"))?;
             switch_back_for_erase(&state, slot)?;
         }
+        // Every area the state names is deleted from the state read after the
+        // switch back, not from the one before it: that switch, where the
+        // partitions were written over, lets go of the other system's record
+        // and moves its root onto `forgotten` as it saves. Reading it again
+        // here means the root that was just moved is deleted from the same
+        // list that names it, rather than being guessed at from a copy taken
+        // before.
         writable(|| {
             let path = Path::new(PATH);
             let mut state = State::load(path)?;
-            if let Some(root) = &root {
-                root.remove()?;
-            }
-            for forgotten in &forgotten {
-                forgotten.remove()?;
+            let mut areas: Vec<Area> = state.system.iter().map(|system| system.root.clone()).collect();
+            areas.extend(state.forgotten.iter().map(|forgotten| forgotten.root.clone()));
+            for area in &areas {
+                area.remove()?;
             }
             if state.system.is_some() || state.occupied.is_some() || state.saved.is_some() || !state.forgotten.is_empty() {
                 state.system = None;
@@ -496,6 +551,24 @@ mod sys {
                 fs::remove_dir(&folder).with_context(|| format!("delete {}", folder.display()))?;
             }
             Ok(())
+        })
+    }
+
+    /// Take away one of the systems a write over its slot left behind: its
+    /// root out of the data partition, which has to be open, and its entry
+    /// out of the state. What is installed and what is left of the rest stay
+    /// as they are — this is the page's "take it back", not a reinstall and
+    /// not a removal of the other system.
+    pub fn forget(id: &str) -> Result<()> {
+        ensure!(skyward_block::mount::is_mount_point(data())?, "the data partition is not open");
+        resume()?;
+        writable(|| {
+            let path = Path::new(PATH);
+            let mut state = State::load(path)?;
+            let at = state.forgotten.iter().position(|forgotten| forgotten.id == id).with_context(|| format!("no system written over is named {id:?}"))?;
+            let forgotten = state.forgotten.remove(at);
+            forgotten.root.remove().with_context(|| format!("take away the room {id:?} still takes"))?;
+            state.save(path)
         })
     }
 }
@@ -554,5 +627,25 @@ mod tests {
         let places = crate::switch::Places { state: &path, by_name: dir.path(), store: dir.path(), program: dir.path() };
         let why = crate::switch::switch(&places, skyward_vab::Slot::A, crate::state::Who::Other).unwrap_err();
         assert!(format!("{why:#}").contains("no other system is installed"), "the trap that ends in the other system starting every time is shut: {why:#}");
+    }
+
+    #[test]
+    fn a_slot_started_as_it_stands_starts_the_installed_one_and_saves_the_rest_as_let_go_of() {
+        // The two halves of `start_as_it_is` a test can ask for: the control
+        // is a recorder, and the state is a file in a temporary directory.
+        let (_dir, _at, state) = crate::guard::tests::phone(b"old boot", b"other system boot");
+        let id = state.system.as_ref().unwrap().id.clone();
+        let root = state.system.as_ref().unwrap().root.clone();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("systems.toml");
+        state.save(&path).unwrap();
+        let control = Recorder(Default::default());
+        let (started, left) = start_as_it_stands(&control, skyward_vab::Slot::B, &path, "an update wrote over it").unwrap();
+        assert_eq!(started, skyward_vab::Slot::A, "the other system is in B, so the updated installed system in A starts");
+        assert_eq!(*control.0.lock().unwrap(), [skyward_vab::Slot::A], "the boot control was told A, never B");
+        assert_eq!(left.as_deref(), Some(id.as_str()), "what was let go of is said, so kmsg can name the room it still takes");
+        let after = crate::state::State::load(&path).unwrap();
+        assert!(after.occupied.is_none() && after.saved.is_none() && after.system.is_none(), "the state says nothing of the other system starts any more");
+        assert_eq!(after.forgotten.into_iter().map(|forgotten| forgotten.root).collect::<Vec<_>>(), [root], "the room it takes is still named");
     }
 }

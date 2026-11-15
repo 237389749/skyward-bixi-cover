@@ -160,7 +160,7 @@ pub(crate) fn let_go(state: &mut State, why: &str) {
         // Pushed, not put in place of what is there: an entry left from an
         // earlier system is still an area taking room, and writing over it
         // would lose the name of that one for good.
-        state.forgotten.push(Forgotten { id: system.id, root: system.root, why: why.to_string() });
+        state.forgotten.push(Forgotten { id: system.id, name: system.name, root: system.root, why: why.to_string() });
     }
 }
 
@@ -298,7 +298,7 @@ pub(crate) mod tests {
         // names it, so a new one is added beside it rather than in its place.
         let (_dir, _at, mut state) = phone(b"old boot", b"other system boot");
         let earlier = state.system.as_ref().unwrap().root.clone();
-        state.forgotten.push(Forgotten { id: "earlier".into(), root: earlier.clone(), why: "an update wrote over it".into() });
+        state.forgotten.push(Forgotten { id: "earlier".into(), name: "Earlier".into(), root: earlier.clone(), why: "an update wrote over it".into() });
         let now = state.system.as_ref().unwrap().root.clone();
         let_go(&mut state, "an update wrote over it");
         assert_eq!(state.forgotten.len(), 2, "both rooms are named");

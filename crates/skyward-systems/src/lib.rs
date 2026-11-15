@@ -31,6 +31,22 @@ pub struct Overview {
     /// system was installed: its vendor_boot or its dtbo, which the other
     /// system starts with too.
     pub changed: bool,
+    /// Systems a write over their slot left behind: nothing starts them, and
+    /// their roots still take room in the data partition until they are
+    /// installed again or taken away.
+    pub forgotten: Vec<ForgottenSystem>,
+}
+
+/// A system an update wrote over its slot left behind, as the page shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForgottenSystem {
+    pub id: String,
+    /// What it called itself; its id where the record is older than that.
+    pub name: String,
+    /// The bytes its root takes in the data partition.
+    pub size: u64,
+    /// What wrote over it, as the guard said it.
+    pub why: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

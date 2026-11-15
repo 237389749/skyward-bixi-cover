@@ -1210,6 +1210,9 @@ pub enum Confirm {
     SwitchSystem,
     /// Take the other system away.
     RemoveSystem,
+    /// Take away the room a system a write over its slot left behind still
+    /// takes, at this place in the list of them the systems page shows.
+    ForgetSystem(usize),
     /// Install the system the installer holds with the room chosen.
     InstallSystem,
 }
@@ -1432,6 +1435,9 @@ pub enum SystemsWork {
     Switching(Who),
     /// Taking the other system away.
     Removing,
+    /// Taking away the room one of the systems a write over its slot left
+    /// behind still takes.
+    Forgetting,
 }
 
 /// Where the reboot page sends the device, in the order it lists them.
@@ -1610,6 +1616,9 @@ pub enum Action {
     /// Ask to delete the entry the file page shows, or the backup the
     /// restore page shows; a swipe then confirms.
     AskDelete,
+    /// Ask to take away the room a system a write over its slot left behind
+    /// still takes, at this place in the list of them; a swipe then confirms.
+    AskForget(usize),
     /// How to go on when a name is taken where an entry goes.
     Resolve(ClashChoice),
     /// Stop giving the data partition's files their labels.
@@ -2226,6 +2235,10 @@ pub struct State {
     /// Deleting the entry the file page shows, or the backup the restore
     /// page shows, was asked for; a swipe confirms it.
     pub asking_delete: bool,
+    /// Taking away the room a system written over still takes was asked for,
+    /// with the place in the list of them the systems page shows; a swipe
+    /// confirms it.
+    pub asking_forget: Option<usize>,
     /// A copy or move waiting on what to do with the names taken where it
     /// goes, and those names.
     pub clash: Option<(Clip, String, Vec<String>)>,
@@ -2389,6 +2402,7 @@ impl Default for State {
             new_name: String::new(),
             editor: None,
             asking_delete: false,
+            asking_forget: None,
             clash: None,
             job: None,
             relabel: None,
@@ -2592,6 +2606,10 @@ pub enum Effect {
     /// Take the other system away, telling how it went with
     /// [`App::set_systems`] or [`App::systems_work_failed`].
     RemoveSystem,
+    /// Take away the room the system written over as `id` still takes, telling
+    /// how it went with [`App::set_systems`] or
+    /// [`App::systems_work_failed`].
+    ForgetSystem(String),
     /// Install the system the installer holds with a root of `size` bytes.
     InstallSystem { size: u64 },
     /// Mount the slot's partition with this base name, such as `system`.
@@ -4808,6 +4826,9 @@ impl App {
     pub fn set_systems(&mut self, systems: Result<Overview, String>) {
         self.state.systems = Some(systems);
         self.state.systems_work = None;
+        // The list of systems written over just changed with it, so the
+        // place one was asked about no longer names anything.
+        self.state.asking_forget = None;
         self.refresh();
     }
 
@@ -4817,6 +4838,7 @@ impl App {
         let l = self.state.lang;
         let said = match self.state.systems_work.take() {
             Some(SystemsWork::Removing) => tr!(l, "删除失败：{why}", "刪除失敗：{why}", "Couldn't remove: {why}"),
+            Some(SystemsWork::Forgetting) => tr!(l, "清理失败：{why}", "清理失敗：{why}", "Couldn't take the room back: {why}"),
             _ => tr!(l, "切换失败：{why}", "切換失敗：{why}", "Couldn't switch: {why}"),
         };
         self.say(&said, now);
@@ -6275,6 +6297,13 @@ impl App {
             }
             Action::AskDelete => {
                 self.state.asking_delete = true;
+                self.state.asking_forget = None;
+                self.state.confirm = 0.0;
+                self.refresh();
+            }
+            Action::AskForget(at) => {
+                self.state.asking_forget = Some(at);
+                self.state.asking_delete = false;
                 self.state.confirm = 0.0;
                 self.refresh();
             }
@@ -7902,6 +7931,17 @@ impl App {
                 self.state.asking_delete = false;
                 self.state.system_pick = None;
                 self.refresh();
+            }
+            Confirm::ForgetSystem(at) => {
+                if let Some(Ok(systems)) = &self.state.systems {
+                    if let Some(forgotten) = systems.forgotten.get(at) {
+                        fx.push(Effect::ForgetSystem(forgotten.id.clone()));
+                        self.state.systems_work = Some(SystemsWork::Forgetting);
+                        self.state.asking_forget = None;
+                        self.state.confirm = 0.0;
+                        self.refresh();
+                    }
+                }
             }
             Confirm::InstallSystem => {
                 if let Install::SystemChoosing(choice) = &self.state.install {
@@ -11006,6 +11046,7 @@ mod tests {
             other: Some(skyward_systems::Other { id: "ubuntu".into(), name: "Ubuntu Touch".into(), version: "24.04".into(), size: 16 << 30 }),
             other_starts: false,
             changed: false,
+            forgotten: Vec::new(),
         }
     }
 

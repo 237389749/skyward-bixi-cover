@@ -145,6 +145,7 @@ pub fn confirm_label(which: Confirm, s: &State) -> (&'static str, bool) {
         Confirm::Relabel => (["滑动以修复", "滑動以修復", "Slide to fix"], true),
         Confirm::SwitchSystem => (["滑动以切换并重启", "滑動以切換並重新啟動", "Slide to switch and reboot"], false),
         Confirm::RemoveSystem => (["滑动以删除", "滑動以刪除", "Slide to remove"], true),
+        Confirm::ForgetSystem(_) => (["滑动以清理", "滑動以清理", "Slide to take it back"], true),
         Confirm::InstallSystem => (INSTALL, false),
     };
     (s.lang.pick(label), danger)
@@ -1951,7 +1952,12 @@ pub fn backup(cx: &Ctx) -> Frame {
         .collect();
     let parts = widgets::list(&mut c, t, f, y, &rows);
     out.extend(hits(&parts.rows, &[0, 1, 2, 3].map(Action::BackupPart)));
-    let y = widgets::section(&mut c, t, f, parts.bottom, l.pick(["存放位置", "存放位置", "Save to"]));
+    let y = widgets::footnote(&mut c, t, f, parts.bottom, l.pick([
+        "第二系统的系统镜像不在备份里（data 分区里的 Skyward 目录被跳过），删掉第二系统后要重新安装。",
+        "第二系統的系統映像檔不在備份裡（data 分割區裡的 Skyward 目錄被跳過），刪掉第二系統後要重新安裝。",
+        "The second system's image is not in a backup — the Skyward folder in the data partition is skipped — so the second system has to be installed again after it is removed.",
+    ]));
+    let y = widgets::section(&mut c, t, f, y, l.pick(["存放位置", "存放位置", "Save to"]));
     let storage = match (s.data.storage_open(), i.storage.free.map(fmt::gb)) {
         (true, Some(free)) => tr!(l, "剩余 {free}", "剩餘 {free}", "{free} free"),
         (true, None) => l.pick(["无法读取剩余空间", "無法讀取剩餘空間", "Free space unknown"]).to_string(),
@@ -4787,6 +4793,10 @@ pub fn systems(cx: &Ctx) -> Frame {
                 l.pick(["正在删除第二系统", "正在刪除第二系統", "Removing the second system"]).to_string(),
                 l.pick(["正在归还 data 分区中的空间", "正在歸還 data 分割區中的空間", "Giving its room back to the data partition"]),
             ),
+            SystemsWork::Forgetting => (
+                l.pick(["正在清理旧系统", "正在清理舊系統", "Taking back the room an older system holds"]).to_string(),
+                l.pick(["正在归还 data 分区中的空间，里面的数据一起没", "正在歸還 data 分割區中的空間，裡面的資料一起沒", "Giving its room back to the data partition, its data with it"]),
+            ),
         };
         let y = widgets::progress_card(&mut c, t, f, top, &heading, detail, None);
         let y = widgets::footnote(&mut c, t, f, y, l.pick(["完成前，请不要关机。", "完成前，請不要關機。", "Don't power off until it's done."]));
@@ -4886,6 +4896,35 @@ pub fn systems(cx: &Ctx) -> Frame {
             let track = widgets::confirm(&mut c, t, f, y2 + t.m.dp(24.0), label, danger, s.confirm);
             out.push(Hit { rect: track, action: Action::Confirm(Confirm::RemoveSystem) });
             y = track.y + track.h;
+        }
+    }
+    // The systems a write over their slot left behind: their boot sets are
+    // gone, so nothing starts them, but the roots still take room that the
+    // page has to show and has to be able to take back — the owner's data is
+    // in them, so they are never taken away without being asked.
+    if !systems.forgotten.is_empty() {
+        y = widgets::section(&mut c, t, f, y, l.pick(["已写掉的旧系统", "已寫掉的舊系統", "Systems a write left behind"]));
+        let subs: Vec<String> = systems.forgotten.iter().map(|forgotten| format!("{} · {}", fmt::bytes(forgotten.size), forgotten.why)).collect();
+        let rows: Vec<Row> = systems.forgotten.iter().zip(&subs).map(|(forgotten, sub)| Row::new(forgotten.name.as_str()).subtitle(sub).trail(Trail::Arrow)).collect();
+        let list = widgets::list(&mut c, t, f, y, &rows);
+        let acts: Vec<Action> = (0..systems.forgotten.len()).map(Action::AskForget).collect();
+        out.extend(hits(&list.rows, &acts));
+        let note = l.pick([
+            "它们的启动镜像已被更新写掉，现在起不来了，但 data 分区里的镜像还在，占着上面写的空间。",
+            "它們的啟動映像檔已被更新寫掉，現在起不來了，但 data 分割區裡的映像檔還在，佔著上面寫的空間。",
+            "An update wrote over their boot images, so nothing starts them any more, but their images still sit in the data partition and take the room above.",
+        ]);
+        y = widgets::footnote(&mut c, t, f, list.bottom, note);
+        if let Some(at) = s.asking_forget {
+            if let Some(forgotten) = systems.forgotten.get(at) {
+                let (name, size) = (forgotten.name.as_str(), fmt::bytes(forgotten.size));
+                let ask = tr!(l, "清理「{name}」会归还 {size}，镜像里的数据一起没，无法恢复。", "清理「{name}」會歸還 {size}，映像檔裡的資料一起沒，無法復原。", "Taking “{name}” back gives {size} to the data partition, and the data in its image goes with it for good.");
+                let y2 = widgets::footnote(&mut c, t, f, y, &ask);
+                let (label, danger) = confirm_label(Confirm::ForgetSystem(at), s);
+                let track = widgets::confirm(&mut c, t, f, y2 + t.m.dp(24.0), label, danger, s.confirm);
+                out.push(Hit { rect: track, action: Action::Confirm(Confirm::ForgetSystem(at)) });
+                y = track.y + track.h;
+            }
         }
     }
     Frame::new(t, fit(c, t, y), out, title, top)

@@ -177,16 +177,24 @@ occupied 槽的另一槽），`saved` 作废，并把**第二系统的记录**�
   数 `/data` 还剩多少**；顺序很重要——那块 area 的字节还在 data 里，先数房间会得出
   「只剩 18 GB、装不下你的 20 GB」，而删掉那 20 GB 就够，用户连删都不许删。删完再
   `area::create`，`create_new` 也不会在 `/data/skyward/systems/<id>.img` 上直接失败；
-- 走 `remove()`（卸掉第二系统）时，`remove()` 在切换**之前**就把 `state.system` 和
-  `state.forgotten` 里**每一条**的 root 都取出来，切完一并删，所以经 `remove()` 不会留
-  孤儿；
-- 只被 OTA 覆盖、既没重装同 id 也没走 `remove()` 的话，那块 area 一直占着空间，需要
-  人工删 `/data/skyward/systems/<id>.img`。页面上还没有「清掉它」的按钮，这一步目前
-  只能人工做（`docs` 记着，等页面接上 `forgotten` 再补；接的时候每条要有 `size` 才能
-  让用户看见「还占 20 GB」再点删）。
+- 走 `remove()`（卸掉第二系统）时，`remove()` 不再用切换前那张快照：切换（`switch_back_for_erase`）
+  会把当前 `system` 挪进 `forgotten` 并写盘，所以删的时候重新 `State::load` 一次，把 `system` 和
+  `forgotten` 里的 **每一条** root 一起删。**只有**「被 OTA 覆盖、既没重装同 id、也没走
+  `remove()`」这种情况才会留孤儿——那时它已经有名字了（`forgotten`），下一段说怎么清；
+- 页面上「已写掉的旧系统」一节（`Overview.forgotten` → `ForgottenSystem{id,name,size,why}`）逐条
+  列出：`size` 是 `root.size - HEADER`，即那块 area 在 data 里实占的字节，`why` 是 `written_over`
+  的原话。每条一行「X GB · 被什么写掉」+ 点进去一个滑动确认，删的是那一条的 root 和
+  `forgotten` 里那一条记录（`install::forget(id)`：先确认 data 挂着、`resume()`，再在
+  `writable` 里 load → `position` 找到 → `remove` → `root.remove` → `save`）。
+  这也就是原来那句「等页面接上 forgotten 再补」的补法：**页面看得见、点得掉**，但**不会自动删**——
+  root 里是那个第二系统的用户数据；
+- `forgotten` 每条的 `size` 只用来显示，不参与算房间：`room_now` 走 `free()`（`f_bavail`），
+  那些 .img 的字节确实占着 data，所以清掉一条之后 `free()` 才会变大。空间不足的
+  `ensure!` 文案会补一句「其中 N 条被写掉的系统还占着 X 字节，可到系统页清掉」，免得用户
+  看到「不够 20 GB」却不知道那 20 GB 是能拿回来的；
 - 被忘掉的系统不会互相盖掉：一条已经 forgotten、用户又装了**另一个 id** 的第二系统、
-  再被 OTA 覆盖一次时，第二条是**追加**进表的，旧那条的 root 仍然有名字。所以页面要按
-  表遍历求和，不能只显示第一条。
+  再被 OTA 覆盖一次时，第二条是**追加**进表的，旧那条的 root 仍然有名字。所以页面按表遍历，
+  不能只显示第一条。
 
 ## 6. 验收清单（等主人点头再做，按顺序）
 

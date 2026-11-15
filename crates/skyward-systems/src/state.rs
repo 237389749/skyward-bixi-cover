@@ -43,6 +43,10 @@ pub struct State {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Forgotten {
     pub id: String,
+    /// The name it gave itself, for the page to show; empty in a file
+    /// written before it was kept.
+    #[serde(default)]
+    pub name: String,
     pub root: Area,
     /// A line on what wrote over it, for the page and for kmsg.
     pub why: String,
@@ -190,7 +194,7 @@ pub(crate) mod tests {
             }),
             occupied: Some("_a".into()),
             switching: Some(Switching { to: Who::Installed, slot: "_a".into(), saved: false }),
-            forgotten: vec![Forgotten { id: "gone".into(), root: area("/data/skyward/systems/gone", 1 << 20), why: "an update wrote over it".into() }],
+            forgotten: vec![Forgotten { id: "gone".into(), name: "Gone".into(), root: area("/data/skyward/systems/gone", 1 << 20), why: "an update wrote over it".into() }],
         };
         state.save(&path).unwrap();
         assert_eq!(State::load(&path).unwrap(), state);

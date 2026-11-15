@@ -3205,6 +3205,14 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                         skyward_sys::kmsg("removing the second system, as the systems page asked")?;
                         systems_worker.as_mut().context("this phone holds no second system")?.send(systems::Task::Remove);
                     }
+                    Effect::ForgetSystem(id) => {
+                        if installer.is_some() {
+                            app.systems_work_failed(app.state.lang.pick(INSTALL_UNFINISHED), now);
+                            continue;
+                        }
+                        skyward_sys::kmsg(&format!("taking back the room the system written over as {id} still takes, as the systems page asked"))?;
+                        systems_worker.as_mut().context("this phone holds no second system")?.send(systems::Task::Forget(id));
+                    }
                     Effect::InstallSystem { size } => installer.as_ref().context("no installer holds a system")?.install_system(size),
                     // The decrypt page shows meanwhile that the work is
                     // under way, and takes nothing more until it is done.

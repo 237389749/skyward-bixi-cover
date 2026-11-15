@@ -22,6 +22,8 @@ pub enum Task {
     SwitchNamed(String),
     /// Remove the second system.
     Remove,
+    /// Take away the room the system written over as `id` still takes.
+    Forget(String),
 }
 
 pub enum Event {
@@ -144,6 +146,7 @@ impl Worker {
                         Task::Switch(to) => Some(switched(switch(to).map(|()| to))),
                         Task::SwitchNamed(name) => Some(switched(named(&name).and_then(|to| switch(to).map(|()| to)))),
                         Task::Remove => install::remove().err().map(|e| Event::Failed(format!("{e:#}"))),
+                        Task::Forget(id) => install::forget(&id).err().map(|e| Event::Failed(format!("{e:#}"))),
                     };
                     if let Some(event) = told {
                         tell(event);
