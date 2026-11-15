@@ -1115,6 +1115,53 @@ mod tests {
         assert!(cfg.backup.data_skipped.contains(&"vendor/secure_element".to_string()));
     }
 
+    /// Reading a configuration without the path checks `DeviceConfig::parse`
+    /// runs: those judge the phone's paths by the host's rules, and a host
+    /// that is not the phone has no absolute path starting at "/". The CI's
+    /// Linux runner checks the same files through `skyward-pack`.
+    fn bixi(name: &str) -> DeviceConfig {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../devices").join(name);
+        toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap()
+    }
+
+    /// The other image the fork hands out: the same phone with its pages on
+    /// the cover panel, for a phone whose inner panel is gone. Naming the
+    /// panel and saying how it is mounted is what makes it draw and touch
+    /// right from the first frame.
+    #[test]
+    fn parses_bixi_cover_first() {
+        let cfg = bixi("bixi-cover-first.toml");
+        assert_eq!(cfg.device.codename, "bixi", "the phone is still bixi");
+        assert_eq!((cfg.display.width, cfg.display.height), (1208, 1392), "the cover panel's own size");
+        assert_eq!(cfg.display.panel.as_deref(), Some("DSI-2"), "named rather than found by connector order");
+        assert_eq!(cfg.display.backlight.as_deref(), Some("panel1-backlight"), "the cover's own backlight");
+        assert_eq!(cfg.display.orientation, Orientation::Upside, "the cover's controller reports half a turn");
+        assert!(
+            !cfg.display.covers,
+            "the fold switch went with the inner panel: with covers on, nothing would open the cover"
+        );
+    }
+
+    /// The two images are one phone: only what the panel being drawn on
+    /// touches may differ between them. Anything else drifting apart is a
+    /// change that reached one image and not the other, which is the way a
+    /// phone ends up with a fix on the build it is not run from.
+    #[test]
+    fn the_cover_variant_differs_from_the_inner_one_only_in_its_panel() {
+        let inner = bixi("bixi.toml");
+        let cover = bixi("bixi-cover-first.toml");
+        assert!(inner.display.covers, "the inner image keeps showing its pages on the cover");
+        assert_eq!(inner.display.panel, None, "the inner panel is the first one connected");
+        assert_eq!(inner.display.backlight, None, "and its own is the first backlight there is");
+        assert_eq!(inner.display.orientation, Orientation::Normal);
+        assert_eq!(inner.modules.load, cover.modules.load, "the same modules start in both");
+        assert_eq!(inner.modules.sources, cover.modules.sources);
+        assert_eq!(inner.partitions.mounted, cover.partitions.mounted);
+        assert_eq!(inner.backup.efs, cover.backup.efs);
+        assert_eq!(inner.services.len(), cover.services.len(), "the same programs run before the pages");
+        assert_eq!(inner.device.model, cover.device.model);
+    }
+
     #[test]
     fn the_phone_is_read_from_a_configuration_this_build_cannot_read_whole() {
         assert_eq!(codename(include_str!("../../../devices/ishtar.toml")).unwrap(), "ishtar");
