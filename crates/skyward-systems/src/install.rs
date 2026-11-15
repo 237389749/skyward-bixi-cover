@@ -2,7 +2,7 @@
 //! systems on the phone, and taking the other system away again.
 
 use crate::state::{State, Store};
-use crate::{Named, Other, Overview};
+use crate::{ForgottenSystem, Named, Other, Overview};
 use skyward_block::area::HEADER;
 
 /// Where the areas' files are, in the data partition.
