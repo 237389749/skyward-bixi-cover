@@ -554,6 +554,15 @@ mod sys {
         })
     }
 
+    /// Whether the state names any system a write over its slot left behind.
+    /// A phone can stop holding both slots' boot sets — the recovery and the
+    /// system partitions change under it — while the record still names roots
+    /// those writes left in the data partition; the systems page is the only
+    /// place that can give that room back, so it is offered for this alone.
+    pub fn left_behind() -> bool {
+        metadata().is_ok() && State::load(Path::new(PATH)).map(|state| !state.forgotten.is_empty()).unwrap_or(false)
+    }
+
     /// Take away one of the systems a write over its slot left behind: its
     /// root out of the data partition, which has to be open, and its entry
     /// out of the state. What is installed and what is left of the rest stay

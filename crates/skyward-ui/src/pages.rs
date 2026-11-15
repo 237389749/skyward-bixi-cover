@@ -4837,6 +4837,10 @@ pub fn systems(cx: &Ctx) -> Frame {
     };
     out.extend(hits(&shown.rows, &[Action::PickSystem(Who::Installed), second_opens]));
     let mut y = shown.bottom + t.m.dp(12.0);
+    // Whether the data partition can be written to from here: the other
+    // system's row and the systems a write left behind both delete files in
+    // it, so both wait on the same thing.
+    let mounted = matches!(s.data, Data::Open | Data::Locked { .. });
     if let Some(why) = &s.system_notice {
         y = widgets::info_card(&mut c, t, f, y, &[(l.pick(SECOND_FAILED), why.clone())]);
     }
@@ -4869,7 +4873,6 @@ pub fn systems(cx: &Ctx) -> Frame {
         y = widgets::section(&mut c, t, f, y, second_role);
         let size = fmt::bytes(other.size);
         let facts = widgets::list(&mut c, t, f, y, &[Row::new(l.pick(["占用空间", "佔用空間", "Space used"])).trail(Trail::Text(&size))]);
-        let mounted = matches!(s.data, Data::Open | Data::Locked { .. });
         let remove = Row::new(l.pick(["删除第二系统", "刪除第二系統", "Remove the second system"])).tint(t.pal.danger);
         let (remove, act) = match mounted {
             true => (remove.trail(Trail::None), Action::AskDelete),
@@ -4901,21 +4904,43 @@ pub fn systems(cx: &Ctx) -> Frame {
     // The systems a write over their slot left behind: their boot sets are
     // gone, so nothing starts them, but the roots still take room that the
     // page has to show and has to be able to take back — the owner's data is
-    // in them, so they are never taken away without being asked.
+    // in them, so they are never taken away without being asked. Taking the
+    // room back deletes files in the data partition, so it waits on the same
+    // thing the row above it waits on: the partition open.
     if !systems.forgotten.is_empty() {
         y = widgets::section(&mut c, t, f, y, l.pick(["已写掉的旧系统", "已寫掉的舊系統", "Systems a write left behind"]));
-        let subs: Vec<String> = systems.forgotten.iter().map(|forgotten| format!("{} · {}", fmt::bytes(forgotten.size), forgotten.why)).collect();
-        let rows: Vec<Row> = systems.forgotten.iter().zip(&subs).map(|(forgotten, sub)| Row::new(forgotten.name.as_str()).subtitle(sub).trail(Trail::Arrow)).collect();
+        let decrypt = l.pick(DECRYPT_NEEDED);
+        let subs: Vec<String> = systems.forgotten.iter().map(|forgotten| match mounted {
+            true => format!("{} · {}", fmt::bytes(forgotten.size), forgotten.why),
+            false => format!("{} · {} · {}", fmt::bytes(forgotten.size), forgotten.why, decrypt),
+        }).collect();
+        let rows: Vec<Row> = systems.forgotten.iter().zip(&subs).map(|(forgotten, sub)| {
+            let row = Row::new(forgotten.name.as_str()).subtitle(sub);
+            match mounted {
+                true => row.trail(Trail::Arrow),
+                false => row,
+            }
+        }).collect();
         let list = widgets::list(&mut c, t, f, y, &rows);
-        let acts: Vec<Action> = (0..systems.forgotten.len()).map(Action::AskForget).collect();
+        let acts: Vec<Action> = (0..systems.forgotten.len()).map(|at| match mounted {
+            true => Action::AskForget(at),
+            false => Action::Open(Screen::Decrypt),
+        }).collect();
         out.extend(hits(&list.rows, &acts));
-        let note = l.pick([
-            "它们的启动镜像已被更新写掉，现在起不来了，但 data 分区里的镜像还在，占着上面写的空间。",
-            "它們的啟動映像檔已被更新寫掉，現在起不來了，但 data 分割區裡的映像檔還在，佔著上面寫的空間。",
-            "An update wrote over their boot images, so nothing starts them any more, but their images still sit in the data partition and take the room above.",
-        ]);
+        let note = match mounted {
+            true => l.pick([
+                "它们的启动镜像已被更新写掉，现在起不来了，但 data 分区里的镜像还在，占着上面写的空间。点一条可以清掉它，归还这块空间。",
+                "它們的啟動映像檔已被更新寫掉，現在起不來了，但 data 分割區裡的映像檔還在，佔著上面寫的空間。點一條可以清掉它，歸還這塊空間。",
+                "An update wrote over their boot images, so nothing starts them any more, but their images still sit in the data partition and take the room above. Tapping one takes it back and gives the room up.",
+            ]),
+            false => l.pick([
+                "要清掉这些旧镜像，得先解密 data 分区——它们就在里面。",
+                "要清掉這些舊映像檔，得先解密 data 分割區——它們就在裡面。",
+                "Taking these back means deleting files in the data partition, so it has to be opened first.",
+            ]),
+        };
         y = widgets::footnote(&mut c, t, f, list.bottom, note);
-        if let Some(at) = s.asking_forget {
+        if let (true, Some(at)) = (mounted, s.asking_forget) {
             if let Some(forgotten) = systems.forgotten.get(at) {
                 let (name, size) = (forgotten.name.as_str(), fmt::bytes(forgotten.size));
                 let ask = tr!(l, "清理「{name}」会归还 {size}，镜像里的数据一起没，无法恢复。", "清理「{name}」會歸還 {size}，映像檔裡的資料一起沒，無法復原。", "Taking “{name}” back gives {size} to the data partition, and the data in its image goes with it for good.");

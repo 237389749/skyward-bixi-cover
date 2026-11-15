@@ -2520,7 +2520,10 @@ impl State {
         match screen {
             Screen::Wlan => self.wlan.is_some(),
             Screen::SkywardUpdate => self.wlan.is_some() && self.recovery_partitions,
-            Screen::Systems => self.dual_boot,
+            // Where both slots can hold a system, and where the state still
+            // names roots a write left in the data partition: that room can
+            // only be given back from this page.
+            Screen::Systems => self.dual_boot || matches!(&self.systems, Some(Ok(systems)) if !systems.forgotten.is_empty()),
             _ => true,
         }
     }

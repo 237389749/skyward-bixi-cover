@@ -1677,8 +1677,11 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
     app.state.dual_boot = app.state.recovery_partitions && both("boot")? && both("init_boot")?;
     // The second system's work; the systems are read at once, for the home
     // page to name the one that starts, once a switch cut off before is
-    // finished.
-    let mut systems_worker = match app.state.dual_boot {
+    // finished. A phone that no longer holds both slots' boot sets can still
+    // have roots a write left behind in the data partition, and the systems
+    // page is the only place to take that room back, so the worker runs for
+    // that too.
+    let mut systems_worker = match app.state.dual_boot || skyward_systems::install::left_behind() {
         true => Some(systems::Worker::start(cfg.device.os_version_prop.clone())?),
         false => None,
     };
