@@ -341,7 +341,12 @@ const PROTECTORS: &str = "/data/system_de";
 /// lock, whose folder is not written at all — there is then nothing to
 /// open, and that is not a failure.
 fn protector(user: u32) -> Result<Option<crate::user::Protector>> {
-    let dir = blobs(user);
+    protector_in(&blobs(user), user)
+}
+
+/// The same, read out of `dir` rather than the phone's own shelf, so that a
+/// shelf that was never written can be tried without a phone.
+fn protector_in(dir: &Path, user: u32) -> Result<Option<crate::user::Protector>> {
     if !dir.try_exists().with_context(|| format!("look for {}", dir.display()))? {
         return Ok(None);
     }
@@ -636,5 +641,17 @@ mod tests {
         assert_eq!(cipher, "aes-xts-plain64");
         assert_eq!(device, "/dev/block/by-name/userdata");
         assert!(wrapped);
+    }
+
+    #[test]
+    fn a_user_who_never_set_a_screen_lock_has_no_blob_and_is_not_a_failure() {
+        // Android writes a user's blob only once a screen lock has been
+        // set, so the folder is not there at all for a user who never set
+        // one. Reading that as an error would take the whole data
+        // partition down over one user who has nothing to open.
+        let dir = std::env::temp_dir().join(format!("skyward-no-lock-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let read = protector_in(&dir, 0).expect("a shelf that was never written is not a failure");
+        assert!(read.is_none(), "and it says there is nothing to open");
     }
 }
