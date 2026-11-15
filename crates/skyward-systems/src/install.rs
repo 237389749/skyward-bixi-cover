@@ -112,15 +112,13 @@ fn left_behind_at(path: &std::path::Path) -> bool {
 }
 
 /// Take one of the systems a write over its slot left behind out of the
-/// state, and its root out of the data partition, which has to be open. What
-/// is installed and what is left of the rest stay as they are.
+/// state, answering with the room it still takes: the room itself is taken
+/// out of the data partition by the caller, which is where an area can be
+/// removed at all.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
-fn forget_at(path: &std::path::Path, id: &str) -> anyhow::Result<()> {
-    let mut state = State::load(path)?;
+fn forget_from(state: &mut State, id: &str) -> anyhow::Result<crate::state::Forgotten> {
     let at = state.forgotten.iter().position(|forgotten| forgotten.id == id).with_context(|| format!("no system written over is named {id:?}"))?;
-    let forgotten = state.forgotten.remove(at);
-    forgotten.root.remove().with_context(|| format!("take away the room {id:?} still takes"))?;
-    state.save(path)
+    Ok(state.forgotten.remove(at))
 }
 
 #[cfg(target_os = "android")]
@@ -610,7 +608,13 @@ mod sys {
     pub fn forget(id: &str) -> Result<()> {
         ensure!(skyward_block::mount::is_mount_point(data())?, "the data partition is not open");
         resume()?;
-        writable(|| forget_at(Path::new(PATH), id))
+        writable(|| {
+            let path = Path::new(PATH);
+            let mut state = State::load(path)?;
+            let forgotten = forget_from(&mut state, id)?;
+            forgotten.root.remove().with_context(|| format!("take away the room {id:?} still takes"))?;
+            state.save(path)
+        })
     }
 }
 
@@ -658,7 +662,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("systems.toml");
         state.save(&path).unwrap();
-        forget_at(&path, &id).unwrap();
+        let mut saved = State::load(&path).unwrap();
+        forget_from(&mut saved, &id).unwrap();
+        saved.save(&path).unwrap();
         let after = State::load(&path).unwrap();
         assert_eq!(after.forgotten.len(), 1, "the one taken back is gone from the record");
         assert_eq!(after.forgotten[0].id, "earlier", "and the one let go of before is still named");
@@ -670,8 +676,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("systems.toml");
         crate::state::State::default().save(&path).unwrap();
-        let why = forget_at(&path, "gone").unwrap_err();
+        let mut state = State::load(&path).unwrap();
+        let why = forget_from(&mut state, "gone").unwrap_err();
         assert!(format!("{why:#}").contains("no system written over is named"), "the page's line can be understood: {why:#}");
+        assert!(state.forgotten.is_empty(), "and nothing was taken out of the record");
     }
 
     /// A boot control that remembers what it was told to start.
