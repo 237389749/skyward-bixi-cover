@@ -1807,11 +1807,11 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
     }
     // A switch asked for finishes one cut off before itself; fastboot leaves
     // /metadata to fastbootd until the recovery's pages come up, so nothing
-    // reads it while it is the one the phone goes to.
+    // reads it while it is the one the phone goes to. Sent once: the guard
+    // reads the flag it sets, so it says yes on the first frame only.
     if let (Some(worker), false, false) = (systems_worker.as_mut(), switch_asked, fastboot) {
-        if !systems_started {
+        if !std::mem::replace(&mut systems_started, true) {
             worker.send(systems::Task::Resume);
-            systems_started = true;
         }
     }
     // The port came up with adb alone; at rest it offers file transfer
