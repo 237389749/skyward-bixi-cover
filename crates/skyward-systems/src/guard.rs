@@ -14,7 +14,7 @@
 //! partitions are read through `by_name`, which is a directory of files
 //! standing in for them in the tests.
 
-use crate::state::{Saved, State};
+use crate::state::{Forgotten, Saved, State};
 use anyhow::{ensure, Context, Result};
 use sha2::{Digest, Sha256};
 use skyward_vab::Slot;
@@ -132,26 +132,39 @@ pub(crate) fn start_from(occupied: Slot) -> Slot {
 
 /// What is let go of when the saved copy is not the boot set the partitions
 /// hold any more: the copy, the slot the other system's boot set was in, and
-/// the other system itself.
+/// the other system's record.
 ///
 /// The three go together because the state has to be one thing or the other.
 /// An update written over the other system's slot leaves that system's boot
-/// set gone from where it was, and its root an orphan in the data partition —
-/// nothing starts it any more. Keeping `system` would say the other system is
-/// still installed while no slot holds its boot set, and every reading of
-/// `occupied == None` would then be wrong: a switch back finds nothing to
-/// switch, and the next switch to the other system saves whatever is in the
-/// slot now as the installed system's copy, which is how a phone ends up
-/// starting the other system every time. Letting go of the record as well
-/// puts the pages back at "no other system is installed", which is the truth
-/// until it is installed again.
+/// set gone from where it was, and nothing starts it any more. Keeping
+/// `system` would say the other system is still installed while no slot holds
+/// its boot set, and every reading of `occupied == None` would then be wrong:
+/// a switch back finds nothing to switch, and the next switch to the other
+/// system saves whatever is in the slot now as the installed system's copy,
+/// which is how a phone ends up starting the other system every time.
+///
+/// Its root is not let go of, though: the area is still in the data
+/// partition, taking the room it takes, and a reinstall of the same package
+/// looks for the very file it is in. So it moves to `forgotten` — no longer
+/// an installed system, still an area to be taken away — and `why` says what
+/// wrote over it, for the page and for [`let_go_at`]'s kmsg.
 ///
 /// Only the state is touched here, so this half of starting a slot as it
 /// stands can be tried without a phone: the boot control is the other half.
-pub(crate) fn let_go(state: &mut State) {
+pub(crate) fn let_go(state: &mut State, why: &str) {
     state.occupied = None;
     state.saved = None;
-    state.system = None;
+    state.forgotten = state.system.take().map(|system| Forgotten { id: system.id, root: system.root, why: why.to_string() });
+}
+
+/// The state as it is left after [`let_go`], loaded, let go of and saved at
+/// `path`; answers with what was forgotten, where anything was.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(crate) fn let_go_at(path: &std::path::Path, why: &str) -> Result<Option<String>> {
+    let mut state = State::load(path)?;
+    let_go(&mut state, why);
+    state.save(path)?;
+    Ok(state.forgotten.map(|forgotten| forgotten.id))
 }
 
 #[cfg(test)]
@@ -248,19 +261,38 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn letting_go_of_the_saved_set_leaves_no_other_system_installed() {
+    fn letting_go_of_the_saved_set_leaves_no_other_system_installed_and_keeps_its_room_named() {
         let (_dir, _at, state) = phone(b"old boot", b"other system boot");
+        let root = state.system.as_ref().unwrap().root.clone();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("systems.toml");
         state.save(&path).unwrap();
         let mut loaded = State::load(&path).unwrap();
         assert_eq!(loaded.occupied.as_deref(), Some("_b"));
         assert!(loaded.saved.is_some());
-        let_go(&mut loaded);
+        let_go(&mut loaded, "an update wrote over it");
         loaded.save(&path).unwrap();
         let after = State::load(&path).unwrap();
         assert!(after.occupied.is_none(), "nothing is in a slot as its own boot set any more");
         assert!(after.saved.is_none(), "there is no copy left to write back");
         assert!(after.system.is_none(), "the other system's boot set is gone from where it was, so its record goes with it");
+        let forgotten = after.forgotten.expect("its root is still in the data partition, taking the room it takes");
+        assert_eq!(forgotten.root, root, "the file a reinstall of the same package would find is the one named here");
+        assert!(forgotten.why.contains("update"), "why it was let go of: {}", forgotten.why);
+    }
+
+    #[test]
+    fn letting_go_at_a_path_saves_what_was_let_go_of() {
+        let (_dir, _at, state) = phone(b"old boot", b"other system boot");
+        let root = state.system.as_ref().unwrap().root.clone();
+        let id = state.system.as_ref().unwrap().id.clone();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("systems.toml");
+        state.save(&path).unwrap();
+        let said = let_go_at(&path, "an update wrote over it").unwrap();
+        assert_eq!(said.as_deref(), Some(id.as_str()), "says whose room is now forgotten");
+        let after = State::load(&path).unwrap();
+        assert!(after.occupied.is_none() && after.saved.is_none() && after.system.is_none(), "nothing of it starts any more");
+        assert_eq!(after.forgotten.map(|forgotten| forgotten.root), Some(root), "the room it takes is still named after the save it was written in");
     }
 }

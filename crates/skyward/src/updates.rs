@@ -490,6 +490,20 @@ fn unpack(zip: &Path, dir: &Path) -> Result<u64> {
             None => String::new(),
         }
     );
+    // Not fatal, but not silent either: Chromium starts its sandbox and crash
+    // handler as files of its own, and a phone keeping the plugin on
+    // /data/media gives up their `x` on the way in. A start that dies a few
+    // seconds in with a sandbox error is this, said here so that the error
+    // is not the only trace.
+    if declined > 0 {
+        let _ = skyward_sys::kmsg(&format!(
+            "{} of the plugin's files lost the mode the zip gives them when it was unpacked into {} ({}), so nothing that has to be run among them can be{}",
+            declined,
+            dir.display(),
+            first_declined.join("; "),
+            if first_declined.is_empty() { String::new() } else { String::from(", the first few are these") }
+        ));
+    }
     Ok(bytes)
 }
 

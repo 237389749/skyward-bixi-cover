@@ -254,23 +254,26 @@ mod sys {
     /// system and vendor from after it, and it would not come up, or it
     /// would come up part way and crash. What was saved is let go instead,
     /// with the other system's record, because nothing holds its boot set
-    /// any more; kmsg says so, so a phone that then starts from an updated
-    /// slot has an account of why it started as it was and why the other
-    /// system has to be installed again.
+    /// any more; its root stays named in the state as forgotten, so the room
+    /// it takes can be taken back and a reinstall of the same package is not
+    /// blocked by it. kmsg says so, so a phone that then starts from an
+    /// updated slot has an account of why it started as it was, why the
+    /// other system has to be installed again, and what is still taking
+    /// room.
     fn start_as_it_is(slot: Slot, why: &anyhow::Error) -> Result<()> {
         let (binder, hardware) = (skyward_binder::driver::Binder::open()?, skyward_binder::driver::Binder::hardware()?);
         let control = skyward_vab::boot::BootControl::open(&binder, &hardware)?;
         let installed = start_at(&control, slot)?;
+        let left = writable(|| guard::let_go_at(Path::new(PATH), &format!("{why:#}")))?;
         let _ = skyward_sys::kmsg(&format!(
-            "the installed system's partitions were written over ({why:#}); slot {} starts as it is, its boot set let go of rather than written back, and the other system's record goes with it - it is to be installed again",
-            installed.letter()
+            "the installed system's partitions were written over ({why:#}); slot {} starts as it is, its boot set let go of rather than written back, and the other system's record goes with it{} - it is to be installed again",
+            installed.letter(),
+            match &left {
+                Some(id) => format!(", its root left in the data partition as {id} until it is installed again or taken away"),
+                None => String::new(),
+            }
         ));
-        writable(|| {
-            let path = Path::new(PATH);
-            let mut now = State::load(path)?;
-            guard::let_go(&mut now);
-            now.save(path)
-        })
+        Ok(())
     }
 
     /// Finish a switch cut off before, where one was; says whether there
@@ -339,6 +342,21 @@ mod sys {
         }
         let id = contents.manifest.id.clone();
         let file = folder.join(format!("{id}.img"));
+        // A system that was written over leaves its root behind, named in
+        // the state as forgotten; installing the same package again looks
+        // for that very file, and `area::create` will not make one where one
+        // is. So it is taken away first — it is the room this install is
+        // about to take, and nothing starts it any more. A file left by
+        // something else, of the same name, is taken away too rather than
+        // failing an install of several gigabytes over it.
+        if state.forgotten.as_ref().is_some_and(|forgotten| forgotten.id == id) {
+            let forgotten = state.forgotten.take().expect("just taken as the same id");
+            forgotten.root.remove().context("take away the room the system it replaces was left in")?;
+            state.save(path)?;
+        }
+        if file.exists() {
+            fs::remove_file(&file).with_context(|| format!("take away what is left at {}", file.display()))?;
+        }
         let root = area::create(&file, size + HEADER, &mut |done, total| progress(Step::Allocating { done, total }))?;
         let made = (|| -> Result<System> {
             write_root(zip, &root, contents.root, progress)?;
@@ -440,10 +458,11 @@ mod sys {
         let state = state()?;
         // Where the switch back finds the partitions written over, it lets go
         // of the other system's record along with the saved copy; the root it
-        // leaves behind is an orphan then, and this is the call that was asked
-        // to take everything away, so the root is kept here rather than read
-        // out of the state afterwards.
+        // leaves behind is named in the state as forgotten then, and this is
+        // the call that was asked to take everything away, so the root is kept
+        // here rather than read out of the state afterwards.
         let root = state.system.as_ref().map(|system| system.root.clone());
+        let forgotten = state.forgotten.as_ref().map(|forgotten| forgotten.root.clone());
         if let Some(suffix) = state.occupied.as_deref() {
             let slot = Slot::from_suffix(suffix).with_context(|| format!("the other system is in slot {suffix:?}"))?;
             switch_back_for_erase(&state, slot)?;
@@ -454,10 +473,14 @@ mod sys {
             if let Some(root) = &root {
                 root.remove()?;
             }
-            if state.system.is_some() || state.occupied.is_some() || state.saved.is_some() {
+            if let Some(forgotten) = &forgotten {
+                forgotten.remove()?;
+            }
+            if state.system.is_some() || state.occupied.is_some() || state.saved.is_some() || state.forgotten.is_some() {
                 state.system = None;
                 state.occupied = None;
                 state.saved = None;
+                state.forgotten = None;
                 state.save(path)?;
             }
             if let Some(store) = &state.store {
@@ -521,7 +544,7 @@ mod tests {
     fn once_the_other_systems_slot_is_let_go_of_there_is_nothing_left_to_switch_to() {
         let (_dir, _at, state) = crate::guard::tests::phone(b"old boot", b"other system boot");
         let mut gone = state;
-        crate::guard::let_go(&mut gone);
+        crate::guard::let_go(&mut gone, "an update wrote over it");
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("systems.toml");
         gone.save(&path).unwrap();

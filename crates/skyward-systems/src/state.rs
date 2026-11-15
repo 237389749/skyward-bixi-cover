@@ -27,6 +27,23 @@ pub struct State {
     pub occupied: Option<String>,
     /// A switch begun and not yet done.
     pub switching: Option<Switching>,
+    /// The other system as it was when something wrote over the slot its
+    /// boot set was in: its record is no longer true of anything that
+    /// starts, but its root is still in the data partition, taking the room
+    /// it takes, and a reinstall of the same package would find the file
+    /// where it wants to make one.
+    #[serde(default)]
+    pub forgotten: Option<Forgotten>,
+}
+
+/// The other system as it was left behind: what it was, the root it still
+/// holds on to, and why it was let go of.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Forgotten {
+    pub id: String,
+    pub root: Area,
+    /// A line on what wrote over it, for the page and for kmsg.
+    pub why: String,
 }
 
 /// The area the boot sets are kept in, and how large the partitions they
