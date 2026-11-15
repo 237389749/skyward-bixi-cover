@@ -150,10 +150,10 @@ flashing, check that line is there before looking at the code.
 
 ## 4. Still missing
 
-### 4.1 The swipe-to-confirm slider falls off the bottom
+### 4.1 The swipe-to-confirm slider falls off the bottom — **fixed 2026-11-16**
 
-The same bug this fork's older sibling fixed for the cover. These pages build a
-**fixed canvas** (`page(cx)`) and then draw the confirm track at the current
+The same bug this fork's older sibling fixed for the cover. These pages built a
+**fixed canvas** (`page(cx)`) and then drew the confirm track at the current
 `y`:
 
 | page | line | canvas |
@@ -162,11 +162,11 @@ The same bug this fork's older sibling fixed for the cover. These pages build a
 | `relabel` | `pages.rs:2614` | `page(cx)` |
 | `slot` | `pages.rs:4725` | `page(cx)` |
 
-On a 1392 px tall screen the target list plus the slot section pushes the track
-past the bottom, where it is neither drawn nor reachable.
+On a 1392 px tall screen the target list plus the slot section pushed the track
+past the bottom, where it was neither drawn nor reachable.
 
-The fix is already in this tree as `long_page(cx)` + `fit(...)`, which every
-other page uses:
+They now build on `long_page(cx)` and trim the canvas to what they drew, as
+every other page does:
 
 ```rust
 let mut c = long_page(cx);
@@ -175,15 +175,24 @@ Frame::new(t, fit(c, t, track.y + track.h), out, l.pick(REBOOT), top)
 ```
 
 `long_page` makes the canvas as tall as the content needs; `fit` trims it to the
-content plus the bottom margin, never shorter than one screen.
+content plus the bottom margin, never shorter than one screen. The regression
+test is `the_reboot_confirm_is_in_the_page_the_cover_panel_scrolls` in `app.rs`:
+it lays the page out at 1208×1392 and holds the confirm track's bottom against
+the canvas.
 
-### 4.2 The lock pages are not laid out for a short screen
+### 4.2 The lock pages are not laid out for a short screen — **fixed 2026-11-16**
 
-The numeric and pattern lock pages have no short-screen branch — nothing in
-`pages.rs` tests a height like `< 700dp`. On the 1208×1392 cover the keypad
-covers the title and the pattern's third row runs off the screen. This was
-solved in the older fork by scaling the keypad by the room left and centring the
-pattern grid; **that work has not been brought over**.
+The numeric and pattern lock pages had no short-screen branch — nothing in
+`pages.rs` tested a height like `< 700dp`. On the 1208×1392 cover the keypad
+covered the title and the pattern's third row ran off the screen.
+
+Both now have one: below 700 dp the words sit at the top, the keypad is scaled
+by the room left (`keypad_height(t, scale)` and `keypad(…, scale)`), and the
+pattern grid is shrunk to fit between the words and the bottom edge and centred
+in that space. The grid's touch area was also twice the grid itself and is now
+the grid. The regression test is `the_lock_pages_fit_the_cover_panel` in
+`app.rs`.
+
 
 ### 4.3 The power key after the screen has gone dark
 
