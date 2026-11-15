@@ -321,6 +321,24 @@ pub struct Display {
     /// screen laid out to its own size.
     #[serde(default)]
     pub covers: bool,
+    /// Which built-in panel to draw on first, on a phone with more than one.
+    ///
+    /// Either the connector as /sys/class/drm names it ("DSI-2"), or the
+    /// panel's native size ("1208x1392"). Left out, the first connected
+    /// panel is used, as on every single-screen phone, and as a foldable
+    /// uses its inner one.
+    ///
+    /// A foldable whose inner panel is gone still has its cover panel
+    /// connected, but the phone reports no folded state without the inner
+    /// panel's driver, so the cover is otherwise never opened. Naming it
+    /// here makes the recovery draw on it from the start.
+    #[serde(default)]
+    pub panel: Option<String>,
+    /// The backlight of the panel drawn on, under /sys/class/backlight.
+    /// Left out, the first one named panel0-backlight is used, which is the
+    /// inner panel's on a foldable.
+    #[serde(default)]
+    pub backlight: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -553,6 +571,24 @@ impl DeviceConfig {
         }
         for name in &cfg.partitions.mounted {
             ensure!(!name.is_empty() && !name.contains('/'), "[partitions] mounted: {name} is not a partition's name");
+        }
+        if let Some(panel) = &cfg.display.panel {
+            // A name the recovery can act on: a connector's, or a size. A
+            // typo would otherwise quietly fall back to the first panel,
+            // which on a foldable is the one the caller meant to leave.
+            let named = panel
+                .strip_prefix("DSI-")
+                .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+            let sized = panel
+                .split_once('x')
+                .is_some_and(|(w, h)| !w.is_empty() && !h.is_empty() && w.bytes().chain(h.bytes()).all(|b| b.is_ascii_digit()));
+            ensure!(named || sized, "[display] panel: {panel:?} is neither a connector name (DSI-2) nor a size (1208x1392)");
+        }
+        if let Some(backlight) = &cfg.display.backlight {
+            ensure!(
+                !backlight.is_empty() && !backlight.contains('/'),
+                "[display] backlight: {backlight:?} is not a device name under /sys/class/backlight"
+            );
         }
         for s in cfg.services.iter().filter(|s| s.oneshot) {
             let waits = s.ready_property.is_some() || s.ready_service.is_some() || s.ready_hardware_service.is_some();
@@ -911,6 +947,41 @@ mod tests {
         assert!(DeviceConfig::parse(&format!("{base}partition = \"modem\"\n")).is_ok());
         assert!(DeviceConfig::parse(&format!("{base}partition = \"by-name/modem\"\n")).is_err());
         assert!(DeviceConfig::parse(&format!("{base}partition = \"\"\n")).is_err());
+    }
+
+    #[test]
+    fn a_display_names_the_panel_it_draws_on() {
+        // A phone with one panel names neither, and takes the first one.
+        let one = DeviceConfig::parse("[device]\ncodename = \"x\"\n[display]\nwidth = 1200\nheight = 2608\n").unwrap();
+        assert_eq!((one.display.panel, one.display.backlight), (None, None));
+
+        // A foldable draws on the cover panel, whose backlight is not the
+        // one the recovery would otherwise pick.
+        let fold = DeviceConfig::parse(
+            "[device]\ncodename = \"bixi\"\n[display]\nwidth = 1208\nheight = 1392\ndensity = 460\n\
+             covers = false\npanel = \"DSI-2\"\nbacklight = \"panel1-backlight\"\n",
+        )
+        .unwrap();
+        assert_eq!(fold.display.panel.as_deref(), Some("DSI-2"));
+        assert_eq!(fold.display.backlight.as_deref(), Some("panel1-backlight"));
+        assert!(!fold.display.covers, "naming the panel takes the folded state out of the choice");
+    }
+
+    #[test]
+    fn a_panel_named_is_rejected_unless_the_recovery_can_act_on_it() {
+        let with = |name: &str| DeviceConfig::parse(&format!("[device]\ncodename = \"x\"\n[display]\npanel = \"{name}\"\n"));
+        for good in ["DSI-2", "DSI-0", "1208x1392"] {
+            assert!(with(good).is_ok(), "{good} names a panel");
+        }
+        for bad in ["dsi-2", "DSI-", "DSI-two", "1208x", "x1392", "1208*1392", "cover", ""] {
+            assert!(with(bad).is_err(), "{bad} names no panel the recovery can find");
+        }
+        let backlight = |name: &str| {
+            DeviceConfig::parse(&format!("[device]\ncodename = \"x\"\n[display]\nbacklight = \"{name}\"\n"))
+        };
+        assert!(backlight("panel1-backlight").is_ok());
+        assert!(backlight("").is_err(), "an empty name is no backlight");
+        assert!(backlight("/sys/class/backlight/x").is_err(), "a path is not a device name");
     }
 
     #[test]

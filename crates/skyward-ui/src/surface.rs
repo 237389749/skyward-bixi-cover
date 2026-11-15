@@ -183,6 +183,24 @@ mod spr {
     }
 }
 
+/// Which panel a `[display] panel` name picks out, as the connector's own
+/// numbers say it: whether it is a DSI connector, that interface's id, and
+/// the sizes its modes report. Kept apart from the DRM types so that the
+/// naming rules are testable on any host, and shared by the panel opener.
+///
+/// A name is either a connector's ("DSI-2", whose 2 is the interface's id)
+/// or a size ("1208x1392"), which needs no knowledge of the wiring. A mode
+/// reports its size in 16 bits, which a panel's own pixels still fit in.
+#[cfg(any(target_os = "android", test))]
+fn is_wanted_panel(name: &str, is_dsi: bool, interface_id: u32, sizes: impl IntoIterator<Item = (u16, u16)>) -> bool {
+    if let Some(number) = name.strip_prefix("DSI-") {
+        return is_dsi && number.parse::<u32>().is_ok_and(|n| n == interface_id);
+    }
+    let Some((width, height)) = name.split_once('x') else { return false };
+    let (Ok(width), Ok(height)) = (width.parse::<u16>(), height.parse::<u16>()) else { return false };
+    sizes.into_iter().any(|size| size == (width, height))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -196,6 +214,32 @@ mod tests {
         assert_eq!(SdeMode::find(ISHTAR, "1440x3200x120cmd").unwrap(), SdeMode { mixers: 2, dsc: true });
         assert_eq!(SdeMode::find(ISHTAR, "1080x2400x60cmd").unwrap(), SdeMode { mixers: 1, dsc: false });
         assert!(SdeMode::find(ISHTAR, "1440x3200x90cmd").is_err());
+    }
+
+    #[test]
+    fn a_named_connector_matches_only_a_dsi_of_that_number() {
+        let cover = [(1208u16, 1392u16)];
+        let inner = [(1224u16, 2912u16)];
+        assert!(is_wanted_panel("DSI-2", true, 2, cover), "the cover panel is DSI-2");
+        assert!(!is_wanted_panel("DSI-2", true, 1, inner), "the inner panel is DSI-1");
+        assert!(!is_wanted_panel("DSI-2", false, 2, cover), "not every connector 2 is a panel");
+        assert!(!is_wanted_panel("DSI-3", true, 2, cover), "a number no connector has");
+        assert!(!is_wanted_panel("DSI-two", true, 2, cover), "not a number at all");
+    }
+
+    #[test]
+    fn a_named_size_matches_a_panel_reporting_it_in_any_mode() {
+        // The cover panel reports its size at each of its two refresh rates.
+        assert!(is_wanted_panel("1208x1392", true, 2, [(1208u16, 1392u16), (1208, 1392)]));
+        // The inner panel's modes are all its own size.
+        assert!(!is_wanted_panel("1208x1392", true, 1, [(1224u16, 2912u16), (1224, 2912)]));
+        // A panel that reports nothing matches nothing.
+        assert!(!is_wanted_panel("1208x1392", true, 2, []));
+        // A size that is not one the panel has, and one that is not a size.
+        assert!(!is_wanted_panel("1208x1500", true, 2, [(1208u16, 1392u16)]));
+        for not in ["1208x", "x1392", "1208*1392", "", "cover"] {
+            assert!(!is_wanted_panel(not, true, 2, [(1208u16, 1392u16)]), "{not:?} names no size");
+        }
     }
 }
 
@@ -342,6 +386,18 @@ pub mod kms {
     /// the recovery's screen.
     fn is_panel(interface: connector::Interface) -> bool {
         matches!(interface, connector::Interface::DSI | connector::Interface::EmbeddedDisplayPort | connector::Interface::LVDS)
+    }
+
+    /// Whether a connector is the panel the configuration names, given what
+    /// it says about itself. The naming rules live in [`is_wanted_panel`],
+    /// which the tests reach without a display.
+    fn is_wanted(info: &connector::Info, wanted: &str) -> bool {
+        is_wanted_panel(
+            wanted,
+            info.interface() == connector::Interface::DSI,
+            info.interface_id(),
+            info.modes().iter().map(|m| m.size()),
+        )
     }
 
     /// Commit without blocking and wait for the flip event, so a commit the
@@ -538,6 +594,21 @@ pub mod kms {
             Self::open_panel(path, 0)
         }
 
+        /// The panel the configuration names, as `[display] panel` spells
+        /// it, or the first connected one when it names none.
+        ///
+        /// A foldable normally draws on its inner panel, and only opens the
+        /// cover when its own driver says the phone is shut. A phone whose
+        /// inner panel is gone has no cover to open that way: nothing
+        /// reports the folded state, so the cover would never be lit.
+        /// Naming it makes it the screen from the start.
+        pub fn open_named(path: &str, wanted: Option<&str>) -> Result<Self> {
+            match wanted {
+                Some(name) => Self::open_panel_by(open_card(path)?, name),
+                None => Self::open_panel(path, 0),
+            }
+        }
+
         /// The `which`-th built-in panel that is connected, counting up
         /// from the lowest connector: 0 is the screen the phone shows the
         /// pages on, 1 the cover of a phone that folds.
@@ -552,6 +623,35 @@ pub mod kms {
         /// would leave it without the master and its commits refused.
         pub fn open_again(&self, which: usize) -> Result<Self> {
             Self::open_panel_on(dup_card(&self.card)?, which)
+        }
+
+        /// The connected panel the configuration names, by connector or by
+        /// the size its modes report.
+        fn open_panel_by(card: Card, wanted: &str) -> Result<Self> {
+            let res = card.resource_handles().context("read KMS resources")?;
+            let mut panels = Vec::new();
+            for &h in res.connectors() {
+                // The weak read first: it carries the modes without forcing
+                // the driver to probe the display.
+                let info = card.get_connector(h, false).context("read connector")?;
+                if is_panel(info.interface()) && info.state() == connector::State::Connected {
+                    panels.push(info);
+                }
+            }
+            let index = panels.iter().position(|info| is_wanted(info, wanted)).ok_or_else(|| {
+                // Name the panels there are, rather than quietly draw on
+                // another: on a foldable that is the one the caller meant
+                // to leave dark.
+                let listed: Vec<String> = panels
+                    .iter()
+                    .map(|i| {
+                        let (w, h) = i.modes().first().map_or((0, 0), |m| m.size());
+                        format!("{:?} {w}x{h}", i.interface())
+                    })
+                    .collect();
+                anyhow!("no connected panel is {wanted}; the panels are {listed:?}")
+            })?;
+            Self::open_panel_on(card, index)
         }
 
         fn open_panel_on(card: Card, which: usize) -> Result<Self> {

@@ -111,8 +111,10 @@ jobs:
             # This fork hands out bixi alone. The other configurations stay in
             # devices/ for upstream comparison, but no image is built for a
             # phone this fork was never run on, so nobody flashes one by
-            # mistake.
-            echo 'devices=["bixi"]' >> "$GITHUB_OUTPUT"
+            # mistake. bixi-cover-first is the same phone with the pages put
+            # on its cover panel: the image for a phone whose inner panel is
+            # not there.
+            echo 'devices=["bixi","bixi-cover-first"]' >> "$GITHUB_OUTPUT"
           fi
 
   recovery:
