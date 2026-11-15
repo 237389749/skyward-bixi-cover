@@ -1352,6 +1352,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "jpeg-decoder"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "00810f1d8b74be64b13dbf3db89ac67740615d6c891f0e7b6179326533011a07"
+
+[[package]]
 name = "libbz2-rs-sys"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2522,6 +2528,7 @@ dependencies = [
  "drm-ffi",
  "icu_locale_core",
  "jiff",
+ "jpeg-decoder",
  "libc",
  "png",
  "proc-macro2",

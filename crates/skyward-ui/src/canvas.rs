@@ -484,6 +484,32 @@ impl Canvas {
         self.data[dst..dst + len].copy_from_slice(&src.data[at..at + len]);
     }
 
+    /// Lay `src` over this canvas with its top left at (`x`, `y`), each pixel
+    /// blended in by its own alpha; what falls outside the rows and columns
+    /// this canvas writes is left out.
+    pub fn blit(&mut self, src: &Canvas, x: i32, y: i32) {
+        let (rows, cols) = (self.held(), self.cols());
+        let first = (rows.start as i32 - y).max(0);
+        let last = (rows.end as i32 - y).min(src.h as i32);
+        let left = (cols.start as i32 - x).max(0);
+        let right = (cols.end as i32 - x).min(src.w as i32);
+        if first >= last || left >= right {
+            return;
+        }
+        for sy in first..last {
+            for sx in left..right {
+                let s = src.at(sx, sy);
+                let px = [src.data[s], src.data[s + 1], src.data[s + 2], src.data[s + 3]];
+                let px: Rgba = Rgba { r: px[0], g: px[1], b: px[2], a: px[3] };
+                if px.a == 0 {
+                    continue;
+                }
+                let d = self.at(x + sx, y + sy);
+                blend_over(&mut self.data[d..d + 4], px, 1.0);
+            }
+        }
+    }
+
     /// Each row as runs of clear, solid and partly covered pixels, for
     /// laying the canvas over something that keeps changing.
     pub fn runs(&self) -> Vec<Vec<Run>> {

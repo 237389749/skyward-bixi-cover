@@ -14,6 +14,7 @@ use crate::fmt::{self, Verb};
 use crate::font::Fonts;
 use crate::geom::Rect;
 use crate::lang::{Lang, Text};
+use crate::picture;
 use crate::search;
 use crate::term::{self, Term};
 use crate::theme::Theme;
@@ -3980,11 +3981,20 @@ fn browser_page(cx: &Ctx, c: &mut Canvas, out: &mut Vec<Hit>, top: f32) -> (f32,
                         out.extend(hits(&row.rows, &[Action::BrowserLink(i)]));
                         row.bottom
                     }
-                    // The pictures are said, not drawn: this version reads
-                    // the words of a page and where it goes.
-                    web::Block::Image { alt, .. } => {
-                        let said = tr!(l, "［图片］{alt}", "［圖片］{alt}", "[picture] {alt}");
-                        widgets::paragraph(c, t, f, y, &said)
+                    // The pictures are drawn where the page sent them and
+                    // they read: scaled to the room a paragraph has, and
+                    // said instead where they are not there or will not
+                    // decode, so a page of words still says what it lost.
+                    web::Block::Image { alt, data, .. } => {
+                        let x = t.m.title_x + t.m.dp(0.9);
+                        let room = (t.m.w as f32 - x - t.m.title_x).max(1.0);
+                        match data.as_deref().and_then(|d| picture::drawn(c, d, x, y + t.m.dp(12.0), room)) {
+                            Some(bottom) => bottom + t.m.dp(12.0),
+                            None => {
+                                let said = tr!(l, "［图片］{alt}", "［圖片］{alt}", "[picture] {alt}");
+                                widgets::paragraph(c, t, f, y, &said)
+                            }
+                        }
                     }
                     web::Block::Form(_) => widgets::paragraph(c, t, f, y, l.pick(BROWSER_FORM)),
                     web::Block::Rule => widgets::paragraph(c, t, f, y, "──"),
