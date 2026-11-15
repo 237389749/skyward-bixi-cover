@@ -23,6 +23,8 @@ Skyward is a recovery written in Rust, from scratch.
 > Full changelog, what was borrowed from other forks and the known limits:
 > [CHANGELOG-bixi.md](CHANGELOG-bixi.md) · [Releases](https://github.com/XQAB/skyward/releases)
 > How the port got here, decision by decision: [docs/bixi-porting.md](docs/bixi-porting.md)
+> Why a phone with its inner panel gone needs the other image, what was measured
+> on it, and what is still missing: [docs/cover-first.md](docs/cover-first.md)
 
 <p align="center">
   <img src="assets/home.png" width="30%" alt="Home">
