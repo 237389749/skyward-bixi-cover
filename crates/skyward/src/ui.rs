@@ -3562,29 +3562,51 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                     // folder the browser page looks for a plugin in.
                     Effect::GetPlugin => {
                         ensure!(plugin_worker.is_none(), "the plugin is being downloaded already");
-                        let url = match skyward_ui::app::MIRRORS.get(app.state.mirror).filter(|m| !m.is_empty()) {
-                            Some(mirror) => format!("{mirror}{}", updates::BROWSER_URL),
-                            None => updates::BROWSER_URL.to_string(),
-                        };
+                        // The mirror chosen goes first, then the others, then
+                        // github.com itself: 436 MiB is enough for a mirror to
+                        // hand back something that does not match its digest,
+                        // and giving up there would waste the whole download.
+                        let mut urls: Vec<String> = Vec::new();
+                        let mirrors = skyward_ui::app::MIRRORS.iter().copied().filter(|m| !m.is_empty());
+                        let chosen = skyward_ui::app::MIRRORS.get(app.state.mirror).copied().filter(|m| !m.is_empty());
+                        for mirror in chosen.into_iter().chain(mirrors) {
+                            let url = format!("{mirror}{}", updates::BROWSER_URL);
+                            if !urls.contains(&url) {
+                                urls.push(url);
+                            }
+                        }
+                        urls.push(updates::BROWSER_URL.to_string());
                         let dir = crate::full::PLACES[0].to_string();
                         let path = PathBuf::from(&dir).with_extension("zip");
                         skyward_sys::kmsg(&format!("taking the full browser into {}", path.display()))?;
-                        let task = updates::Task::GetBrowser { url, path, dir: PathBuf::from(dir) };
+                        let task = updates::Task::GetBrowser { urls, path, dir: PathBuf::from(dir) };
                         plugin_worker = Some(updates::Worker::start(task, servers.clone())?);
                     }
                     Effect::StopPlugin => plugin_worker.as_ref().context("the plugin is not being downloaded")?.stop(),
                     Effect::DropPlugin => {
                         ensure!(plugin_worker.is_none(), "the plugin is being downloaded");
-                        let dir = crate::full::PLACES[0].to_string();
-                        let path = PathBuf::from(&dir).with_extension("zip");
-                        skyward_sys::kmsg(&format!("taking the full browser at {} away", dir))?;
-                        let task = updates::Task::DropBrowser { dir: PathBuf::from(dir), path };
+                        // Every place it may have been found in: a copy put
+                        // there by hand goes with the one downloaded here.
+                        let dirs: Vec<PathBuf> = crate::full::PLACES.iter().map(PathBuf::from).collect();
+                        skyward_sys::kmsg(&format!("taking the full browser away from {}", crate::full::PLACES.join(", ")))?;
+                        let task = updates::Task::DropBrowser { dirs };
                         plugin_worker = Some(updates::Worker::start(task, servers.clone())?);
                     }
                     // The page asked again for a full browser already on the
                     // phone: the look at boot can run before the data partition
                     // is open, and the plugin is far too big to download twice.
-                    Effect::ReadPlugin => app.plugin_seen(crate::full::plugin().is_some(), None),
+                    Effect::ReadPlugin => {
+                        // A worker that died saying nothing would leave the
+                        // page showing a download that never ends. The screen
+                        // runs the worker, so it is the one that can tell the
+                        // page it is gone.
+                        let stuck = plugin_worker.is_none()
+                            && app.state.plugin.job.as_ref().map_or(false, |job| job.outcome.is_none());
+                        if stuck {
+                            app.plugin_ended(PluginEnd::Failed("the download stopped without saying how it went".into()), now);
+                        }
+                        app.plugin_seen(crate::full::plugin().is_some(), None);
+                    }
                     // adbd reads the port once, as it starts; asked to listen
                     // on the network it is started again, which the cable's
                     // own transport survives.

@@ -21,7 +21,15 @@ use anyhow::{Context, Result, bail};
 /// Where the plugin is looked for, in the order the owner is likelier to
 /// have put it. The first is the plugin's own README's place; the second is
 /// the same directory seen through the running system's storage.
-pub const PLACES: [&str; 2] = ["/data/media/0/Skyward/plugins/chromium", "/sdcard/Skyward/plugins/chromium"];
+pub const PLACES: [&str; 3] = [
+    // A real filesystem, where a file can be made executable: the plugin is
+    // run out of a chroot, and /data/media is FUSE, which keeps the modes it
+    // is given to itself and often says no to running what it holds.
+    "/data/local/Skyward/plugins/chromium",
+    // Where the phone's own file manager can put one by hand.
+    "/data/media/0/Skyward/plugins/chromium",
+    "/sdcard/Skyward/plugins/chromium",
+];
 
 /// The one file that has to be there for the plugin to be a plugin.
 const CHROMIUM: &str = "usr/lib/chromium/chromium";
@@ -113,10 +121,18 @@ unsafe fn bind(from: &str, at: &str) -> i32 {
 /// that will not load must not hold the browser's own loop.
 pub fn dom(root: &Path, url: &str) -> Result<String> {
     ready(root)?;
+    // What it says when it will not draw goes to a file in the plugin's own
+    // tmp, opened here so the descriptor survives the chroot: a browser that
+    // quits over a missing library or a profile it cannot make leaves that
+    // as the only account of why.
+    let said = root.join("tmp/plugin.err");
+    let said_file = std::fs::File::create(&said).with_context(|| format!("make {}", said.display()))?;
     let mut command = Command::new("/usr/lib/chromium/chromium");
     command
         .args(FLAGS)
-        .arg(format!("--user-data-dir={}", root.join("tmp/given").display()))
+        // Inside the chroot, where `ready` made the shelf: a path of the
+        // recovery's own does not exist in there.
+        .arg("--user-data-dir=/tmp/given")
         .arg(url)
         .env_clear()
         .env("PATH", "/bin:/usr/bin:/usr/sbin")
@@ -127,7 +143,7 @@ pub fn dom(root: &Path, url: &str) -> Result<String> {
         .env("XDG_CONFIG_HOME", "/tmp/config")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+        .stderr(Stdio::from(said_file));
     let root = root.to_path_buf();
     unsafe {
         command.pre_exec(move || {
@@ -178,11 +194,23 @@ pub fn dom(root: &Path, url: &str) -> Result<String> {
     }
     read?;
     let status = status?;
+    // What it wrote down, in the words a person can act on: the last lines
+    // it said before it quit, or before it was hung up.
+    let excuse = || {
+        let text = std::fs::read_to_string(&said).unwrap_or_default();
+        let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+        let from = lines.len().saturating_sub(3);
+        lines[from..].join(" / ")
+    };
     if !status.success() {
-        bail!("the plugin gave up drawing {url}: {status}");
+        let excuse = excuse();
+        let excuse = if excuse.is_empty() { String::new() } else { format!(", and said: {excuse}") };
+        bail!("the plugin gave up drawing {url}: {status}{excuse}");
     }
     if out.trim().is_empty() {
-        bail!("the plugin drew {url} and handed back nothing");
+        let excuse = excuse();
+        let excuse = if excuse.is_empty() { String::new() } else { format!("; it said: {excuse}" };
+        bail!("the plugin drew {url} and handed back nothing{excuse}");
     }
     Ok(out)
 }

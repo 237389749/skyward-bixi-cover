@@ -6039,11 +6039,11 @@ impl App {
                 let mut fx = vec![Effect::ReadUpdate];
                 // The look at boot happens before the data partition
                 // opens, so a plugin that is there can read as absent.
-                // The page asks again each time it opens, and a download
-                // under way is left to say how it went.
-                if !self.state.plugin.there && self.state.plugin.job.is_none() {
-                    fx.push(Effect::ReadPlugin);
-                }
+                // The page asks again each time it opens, whether or not a
+                // download is under way: a worker that died saying nothing
+                // would otherwise leave the progress bar up for good, and
+                // the only one who knows better is the screen that runs it.
+                fx.push(Effect::ReadPlugin);
                 if self.state.update_server && matches!(self.state.check, Check::Idle | Check::Failed(_)) && self.state.online() {
                     self.state.check = Check::Asking;
                     fx.push(Effect::CheckUpdate);

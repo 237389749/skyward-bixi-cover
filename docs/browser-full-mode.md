@@ -16,12 +16,20 @@ GitHub 这类页面上会读出一片空。
 
 ## 二、插件放哪、代码怎么走
 
-插件目录固定两个候选，按出现顺序取第一个：
+插件目录固定三个候选，按出现顺序取第一个：
 
 ```
-/data/media/0/Skyward/plugins/chromium     # 插件 README 里的正式位置
+/data/local/Skyward/plugins/chromium      # 下载落点；真 ext4，权限位算数
+/data/media/0/Skyward/plugins/chromium     # 插件 README 里的正式位置，留给手工拷贝
 /sdcard/Skyward/plugins/chromium           # 同一目录在运行系统里的另一个名字
 ```
+
+第一顺位从 `/data/media/0` 改成 `/data/local`，理由是「能跑起来」这四个字：
+`/data/media` 是 FUSE（`/sdcard` 就是它），`chmod +x` 在那一层基本是空操作，
+用给的 mode 去 `set_permissions` 也不一定生效。插件是一整套 glibc rootfs，
+里面 `usr/lib/chromium/chromium`、`chrome_crashpad_handler`、一堆 `*.so`
+都要可执行，靠 FUSE 那层赌它放行不如直接落在 `/data` 自己的 ext4 上。
+`/data/media/0` 那份仍然认，是为了「人用文件管理器手动拷进去」这条路不断。
 
 判据只有一个文件：`usr/lib/chromium/chromium` 在不在。
 
@@ -34,7 +42,12 @@ GitHub 这类页面上会读出一片空。
   做 `chroot` + `chdir("/")` + `setsid`，`env_clear` 之后只设
   `PATH`/`HOME`/`TMPDIR`/`XDG_RUNTIME_DIR`/`XDG_CACHE_HOME`/`XDG_CONFIG_HOME`，
   跑 `--headless=new --dump-dom --virtual-time-budget=5000`，30 秒没回来就
-  `kill(-pid, SIGKILL)` 整组收掉。
+  `kill(-pid, SIGKILL)` 整组收掉。**给插件的一切路径都必须是 chroot 里的
+  `/tmp`、`/usr` 这类名字，不能带宿主机前缀**：`--user-data-dir` 传的是
+  `/tmp/given`（`ready()` 早就把它建好了），传宿主机绝对路径的话，进 chroot
+  之后那个目录根本不存在，Chromium 建不了 profile。它的 stderr 也不吞：
+  落到 `<插件目录>/tmp/plugin.err`（在 chroot 前用 `File::create` 打开，
+  描述符跟着 `pre_exec` 过去），起不来时最后三行会被带进报错里。
 - `crates/skyward-net/src/web.rs`：`pub fn rendered(agent, url, html)` 把
   拿回来的 DOM 交给 `parse`，再 `fetch_images`，得到和普通读取完全一样的
   `Page`。UI 侧不知道也不关心这一页是怎么来的。
@@ -122,14 +135,17 @@ Arabic 一开始是豆腐块，但同一份 rootfs 之后重跑就正常了—�
 - **下载中**：进度卡（已下载 / 全部、速率）＋「停止」。
 - **已装**：一行「已安装 · 占用 X」＋一行红色「删除插件」。
 
-下载走「在线更新」页选的镜像前缀（与更新用的是同一个 `MIRRORS`，
-没选镜像时直连 GitHub），落到
-`<插件目录>/chromium.zip`，校验 SHA-256
+下载按「已选镜像 → 其余镜像 → github.com 直连」的顺序挨个试：`MIRRORS`
+里的每个前缀都进候选表（选中的排第一，空前缀直连排最后），不是只试一条。
+理由是实测过 `gh-proxy` 这一层会给回截断或不同内容的文件，436 MB 一次下完
+才发现 SHA-256 不对（`Failure::Damaged`），如果候选表只有一条就直接判死，
+永远回不到直连。zip 落到 `<插件目录>/chromium.zip`，校验 SHA-256
 `9e6df85255386eb962bbe6b1ad5e0d2505c7b5ba02a9d7d89d3d20a778f14ea2`
 （与 release 的 digest 一致，真机实测 457 339 582 B），然后用
-`zip::ZipArchive` 就地解到 `/data/media/0/Skyward/plugins/chromium`，
-按 `unix_mode()` 还原权限（Chromium 得能执行），越界名一律拒绝，
-解完把 zip 删掉。
+`zip::ZipArchive` 就地解到 `/data/local/Skyward/plugins/chromium`，
+按 `unix_mode()` 还原权限（还原失败会带着文件名报错，不再静默吞掉——Chromium
+没有 +x 就 exec 不了，这正是「下载完了还是不显示已安装」的一种真因），
+越界名一律拒绝，解完把 zip 删掉。
 
 **为什么不自动装、也不默认装**：一份 436 MB 的下载、1 GB 的落盘，只有
 用户自己说要才值得花；不装的机器行为与以前完全一样，一行代码都不变。
@@ -137,11 +153,12 @@ Arabic 一开始是豆腐块，但同一份 rootfs 之后重跑就正常了—�
 **为什么下载路径和 `plugin_recopy.sh` 的做法一致**：`adb push` 上去的 zip
 用设备自带 `unzip` 解是唯一验证过的路径；`cp -a` 从 `/data/local/tmp` 拷到
 `/data/media/0` 会把 `bin/busybox` 拷坏（md5 对不上，首 4 字节全 0，
-chroot 报 `Exec format error`）。所以 zip 落盘位置与插件目录同在
-`/data/media/0` 下，解压不跨文件系统。
+chroot 报 `Exec format error`）。所以 zip 和插件目录现在都落在 `/data/local`
+下，解压仍然不跨文件系统（`/data/local` 就在 `/data` 上）。
 
-**删除**是 `remove_dir_all` + `remove_file`，NotFound 当成功（重复点不会报错）。
-删完 `full::plugin()` 返回 `None`，浏览器自动退回纯文本，不需要重启。
+**删除**是 `remove_dir_all` + `remove_file`，三处候选目录都删一遍，
+NotFound 当成功（重复点不会报错）。删完 `full::plugin()` 返回 `None`，
+浏览器自动退回纯文本，不需要重启。
 
 **已知未验**：recovery 里这条下载路径没有真机跑过（Android 侧跑过等价流程），
 首次真机点「下载」时请一并看 `/proc/kmsg` 里的 `taking the full browser into …`。

@@ -83,9 +83,10 @@ pub enum Task {
     /// Download the full browser into `path` and unpack it into `dir`: a
     /// Chromium the browser page can draw a page with, which the owner
     /// chooses to have and can take away again.
-    GetBrowser { url: String, path: PathBuf, dir: PathBuf },
-    /// Take the full browser off the phone again.
-    DropBrowser { dir: PathBuf, path: PathBuf },
+    GetBrowser { urls: Vec<String>, path: PathBuf, dir: PathBuf },
+    /// Take the full browser off the phone again, from wherever it was
+    /// found: a copy put there by hand goes with the one downloaded.
+    DropBrowser { dirs: Vec<PathBuf> },
 }
 
 pub enum Event {
@@ -298,10 +299,15 @@ impl Worker {
                     // again, since it is of no use once it is unpacked. What
                     // the plugin takes on the phone is told, not the zip's
                     // size: the two are not the same.
-                    Task::GetBrowser { url, path, dir } => {
+                    // The plugin is 436 MiB and the mirrors in front of
+                    // github.com are the likeliest to hand back something
+                    // else, so every prefix is tried before the download
+                    // is called damaged: the one chosen first, then the
+                    // rest, then github itself.
+                    Task::GetBrowser { urls, path, dir } => {
                         let mut refused = |_: &ureq::Agent| Again::Retry;
                         let sum = Sum::Sha256(BROWSER_SHA256.to_string());
-                        let end = fetch(&servers, vec![url.clone()], &sum, "chromium.zip", &path, &stopping, &using, &tell, &mut refused);
+                        let end = fetch(&servers, urls, &sum, "chromium.zip", &path, &stopping, &using, &tell, &mut refused);
                         let said = match end {
                             End::Downloaded => unpack(&path, &dir).map_err(|e| format!("{e:#}")),
                             End::Stopped => Err(PLUGIN_STOPPED.to_string()),
@@ -316,17 +322,21 @@ impl Worker {
                     // Taking the plugin away leaves the phone as it was before
                     // it was downloaded: the browser reads pages the plain way
                     // again, with the text their HTML holds.
-                    Task::DropBrowser { dir, path } => {
+                    Task::DropBrowser { dirs } => {
                         let gone = (|| -> Result<()> {
-                            match fs::remove_dir_all(&dir) {
-                                Ok(()) => {}
-                                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                                Err(e) => return Err(e).with_context(|| format!("take {} away", dir.display())),
-                            }
-                            match fs::remove_file(&path) {
-                                Ok(()) => {}
-                                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                                Err(e) => return Err(e).with_context(|| format!("take {} away", path.display())),
+                            for dir in &dirs {
+                                match fs::remove_dir_all(dir) {
+                                    Ok(()) => {}
+                                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                                    Err(e) => return Err(e).with_context(|| format!("take {} away", dir.display())),
+                                }
+                                // The zip the plugin came in sits beside it.
+                                let zip = dir.with_extension("zip");
+                                match fs::remove_file(&zip) {
+                                    Ok(()) => {}
+                                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                                    Err(e) => return Err(e).with_context(|| format!("take {} away", zip.display())),
+                                }
                             }
                             Ok(())
                         })()
@@ -452,8 +462,13 @@ fn unpack(zip: &Path, dir: &Path) -> Result<u64> {
             out.metadata().map(|m| m.len()).unwrap_or(0)
         };
         bytes += written;
+        // Chromium has to be run, and the shell of it read: a mode the
+        // archive carried and the phone would not take is a plugin that
+        // cannot start, said here rather than at the first page that needs
+        // it. (Where the phone keeps it matters too: a folder whose files
+        // cannot be made executable, as /data/media's are, will fail here.)
         if let Some(mode) = entry.unix_mode() {
-            let _ = fs::set_permissions(&to, fs::Permissions::from_mode(mode));
+            fs::set_permissions(&to, fs::Permissions::from_mode(mode)).with_context(|| format!("make {} runnable as the zip says", to.display()))?;
         }
     }
     Ok(bytes)
