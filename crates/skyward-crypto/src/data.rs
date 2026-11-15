@@ -190,6 +190,23 @@ pub struct Closed {
     pub why: Option<String>,
 }
 
+/// Who, if anyone, waits on a screen lock to open their own files, and why
+/// the owner's own files did not open at all when no screen lock can.
+///
+/// A user whose files failed to open is not asked for a credential, because
+/// none can open them: the recovery says why instead. Users whose credential
+/// the phone made up are never asked either. The owner is user 0 and theirs
+/// opens first, so a failure that is the owner's is the one worth saying
+/// aloud; another user's does not hide the owner's storage.
+pub fn waiting_on_a_lock(closed: &[Closed]) -> (Option<(u32, i32)>, Option<String>) {
+    let waiting = closed.iter().find(|c| !c.made_up && c.why.is_none()).map(|c| (c.user, c.lock));
+    let failed = match waiting {
+        Some(_) => None,
+        None => closed.iter().find(|c| c.user == OWNER).and_then(|c| c.why.clone()),
+    };
+    (waiting, failed)
+}
+
 /// The data partition as far as it opens with nothing a user knows.
 pub struct Opening {
     /// How it was mounted, where this mounted it rather than an earlier
@@ -616,6 +633,7 @@ pub fn target(device: &str, sectors: u64, key: &[u8], encryption: &Encryption) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::user::Lock;
 
     fn entry(extras: &str) -> Entry {
         Entry {
@@ -670,5 +688,32 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let read = protector_in(&dir, 0).expect("a shelf that was never written is not a failure");
         assert!(read.is_none(), "and it says there is nothing to open");
+    }
+
+    fn closed(user: u32, lock: i32, made_up: bool, why: Option<&str>) -> Closed {
+        Closed { user, lock, made_up, why: why.map(str::to_owned) }
+    }
+
+    #[test]
+    fn a_screen_lock_is_asked_for_where_one_was_set() {
+        assert_eq!(waiting_on_a_lock(&[closed(OWNER, Lock::PIN, false, None)]), (Some((OWNER, Lock::PIN)), None));
+        assert_eq!(waiting_on_a_lock(&[closed(10, Lock::PATTERN, false, None)]), (Some((10, Lock::PATTERN)), None));
+        assert_eq!(waiting_on_a_lock(&[closed(10, Lock::PASSWORD, false, None)]), (Some((10, Lock::PASSWORD)), None));
+    }
+
+    #[test]
+    fn nobody_is_asked_where_no_screen_lock_can_open_what_is_closed() {
+        assert_eq!(waiting_on_a_lock(&[]), (None, None), "nothing closed, nothing asked");
+        assert_eq!(
+            waiting_on_a_lock(&[closed(10, Lock::NONE, false, Some("the weaver is not running"))]),
+            (None, None),
+            "another user's failure does not hide the owner's storage"
+        );
+        assert_eq!(
+            waiting_on_a_lock(&[closed(OWNER, Lock::NONE, false, Some("the weaver is not running"))]),
+            (None, Some("the weaver is not running".to_owned())),
+            "the owner's own failure is said aloud instead of being answered"
+        );
+        assert_eq!(waiting_on_a_lock(&[closed(OWNER, Lock::PIN, true, None)]), (None, None), "a made-up credential is never asked");
     }
 }

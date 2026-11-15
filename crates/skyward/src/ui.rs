@@ -1216,26 +1216,31 @@ fn log_mounted(mounted: &Opened) -> Result<()> {
 /// Show what the data partition still keeps closed: the first user whose
 /// own files wait on a screen lock they set themselves, with the control
 /// that lock is answered with, or nothing. Users whose credential the phone
-/// made up open behind the owner and are never asked; one that did not
-/// open goes to the kernel log with why.
+/// made up open behind the owner and are never asked; one whose files did
+/// not open at all says why instead of being asked for a credential.
 fn show_closed(app: &mut App, closed: &[Closed]) -> Result<()> {
-    use skyward_crypto::user::Lock;
     skyward_sys::kmsg(&format!("the users whose own files are still closed: {:?}", closed.iter().map(|c| c.user).collect::<Vec<_>>()))?;
     for c in closed {
         if let Some(why) = &c.why {
             skyward_sys::kmsg(&format!("the files of user {} stay closed: {why}", c.user))?;
         }
     }
-    let waiting = closed.iter().find(|c| !c.made_up).map(|c| {
-        let keys = match c.lock {
-            Lock::PATTERN => Keys::Pattern,
-            Lock::PIN => Keys::Digits,
-            _ => Keys::Letters,
-        };
-        (c.user, keys)
-    });
-    app.data_waiting(waiting);
+    let (waiting, failed) = skyward_crypto::data::waiting_on_a_lock(closed);
+    match failed {
+        Some(why) => app.data_failed(why),
+        None => app.data_waiting(waiting.map(|(user, lock)| (user, keys_for(lock)))),
+    }
     Ok(())
+}
+
+/// The control a screen lock of `lock` is answered with.
+fn keys_for(lock: i32) -> Keys {
+    use skyward_crypto::user::Lock;
+    match lock {
+        Lock::PATTERN => Keys::Pattern,
+        Lock::PIN => Keys::Digits,
+        _ => Keys::Letters,
+    }
 }
 
 /// What the file manager lists for a folder: its entries, folders and
