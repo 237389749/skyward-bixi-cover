@@ -219,13 +219,30 @@ pub fn open_without_credential(service: &KeyMint) -> Result<Opening> {
         let Some(protector) = protector(user)? else { continue };
         match protector.lock {
             None => {
-                let note = open_user_files(service, user, None, None)?;
-                if user == OWNER {
-                    owner = note;
+                // A user with no screen lock still keeps their own files
+                // behind the secure element, which a phone with a weaver
+                // reaches through that service. A recovery that cannot reach
+                // it keeps those files closed and carries on: the part of the
+                // partition that opens without a credential is the shared
+                // one, and a recovery is used for what is in it.
+                match open_user_files(service, user, None, None) {
+                    Ok(note) => {
+                        if user == OWNER {
+                            owner = note;
+                        }
+                    }
+                    Err(e) => closed.push(Closed { user, lock: 0, made_up: made_up(user, &protector.id), why: Some(format!("{e:#}")) }),
                 }
             }
             Some(lock) => closed.push(Closed { user, lock: lock.kind, made_up: made_up(user, &protector.id), why: None }),
         }
+    }
+    // The owner's shared storage is not behind their own files' secret: it
+    // sits in the part of the partition that opens without a credential, so
+    // it is shown whether or not those files opened. A phone whose weaver is
+    // not running keeps the photos and packages reachable this way.
+    if mount::is_mount_point(Path::new(MOUNT))? {
+        show_owner_storage()?;
     }
     Ok(Opening { mounted, closed: open_made_up(service, closed, &owner) })
 }
