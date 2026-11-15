@@ -169,12 +169,11 @@ occupied 槽的另一槽），`saved` 作废，并把**第二系统的记录**�
 `once_the_other_systems_slot_is_let_go_of_there_is_nothing_left_to_switch_to`）。
 
 用户看到的是系统页回到「未安装第二系统」。要用就重装：`install` 会复用
-`/data/skyward/systems` 里那份 store（`state.store` 还留着），旧的 root 文件是孤儿
-area，重装时按新 id 建新 area，孤儿那份需要人工删（`/data/skyward/systems/*.img`）。
-
-抹 data 走同一条路：`switch_back_for_erase` 也被覆盖就只 `set_active`，抹 data
-本身不依赖第二系统能不能起来。卸掉第二系统时 root 由 `remove()` 在切换**之前**取
-出来再删，不会因为记录被清而漏删成孤儿。
+`/data/skyward/systems` 里那份 store（`state.store` 还留着）。**只有**在被 OTA 覆盖、
+又没接着走「卸掉第二系统」这条路的情况下，旧 root 才留在 `/data/skyward/systems/*.img`
+成孤儿 area，需要人工删；`remove()` 走的是同一条「被覆盖就只 set_active」，但它在切换
+**之前**先把 `state.system` 里的 root 取出来，切完照那个 handle 删，所以经 `remove()`
+不会留孤儿。重装时按新 id 建新 area，孤儿那份不自动回收。
 
 ## 6. 验收清单（等主人点头再做，按顺序）
 
