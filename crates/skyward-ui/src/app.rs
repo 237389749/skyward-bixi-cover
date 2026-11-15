@@ -11243,6 +11243,32 @@ mod tests {
     }
 
     #[test]
+    fn the_lock_pages_fit_the_cover_panel() {
+        // 1208 x 1392 at 440 dpi: the keypad at its natural size would bury
+        // the title, and the pattern would run past the bottom edge.
+        let (f, i) = (fonts(), info());
+        for keys in [Keys::Digits, Keys::Pattern] {
+            let mut app = App::new(Screen::Decrypt, 1208, 1392, 2.75);
+            app.state.data = Data::Locked { user: 0, keys, checking: false };
+            app.refresh();
+            let frame = app.frame(&f, &i);
+            let canvas = frame.canvas.h as f32;
+            if keys == Keys::Pattern {
+                let (_, cy, span) = frame.pattern.expect("the pattern grid is drawn");
+                assert!(cy - span / 2.0 >= 0.0, "the grid starts on the page");
+                assert!(cy + span / 2.0 <= canvas, "the grid ends on the page");
+            } else {
+                let keys: Vec<_> = frame.hits.iter().filter(|h| matches!(h.action, Action::Type(_))).collect();
+                assert!(!keys.is_empty(), "the keypad is drawn");
+                let top = keys.iter().map(|h| h.rect.y).fold(f32::INFINITY, f32::min);
+                let bottom = keys.iter().map(|h| h.rect.y + h.rect.h).fold(0.0, f32::max);
+                assert!(top >= 200.0 * 2.75 - 1.0, "the keypad starts below the words");
+                assert!(bottom <= canvas, "the keypad ends on the page");
+            }
+        }
+    }
+
+    #[test]
     fn the_code_typed_on_the_keypad_is_sent_once_and_checked_before_more_is_taken() {
         let (f, i) = (fonts(), info());
         let mut app = App::new(Screen::Decrypt, W, H, PPD);

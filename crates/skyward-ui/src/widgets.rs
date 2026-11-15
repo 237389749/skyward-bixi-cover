@@ -1898,22 +1898,25 @@ const PAD_KEYS: [Cap; 12] = [
     Cap::Enter,
 ];
 
-/// How tall the keypad is on this theme's screen.
-pub fn keypad_height(t: &Theme) -> f32 {
-    t.m.dp(PAD_TOP_DP + 4.0 * PAD_KEY_DP + 3.0 * PAD_GAP_Y_DP + PAD_BOTTOM_DP)
+/// How tall the keypad is on this theme's screen, its keys drawn at `scale`
+/// of their natural size.
+pub fn keypad_height(t: &Theme, scale: f32) -> f32 {
+    t.m.dp((PAD_TOP_DP + 4.0 * PAD_KEY_DP + 3.0 * PAD_GAP_Y_DP + PAD_BOTTOM_DP) * scale)
 }
 
 /// The keypad a screen lock's code is typed on, its top at `top`: four rows
 /// of three round keys, `pressed` drawn held down, and the last row erasing
-/// and confirming, in `l`. Returns where each key answers a touch.
-pub fn keypad(c: &mut Canvas, t: &Theme, f: &Fonts, l: Lang, top: f32, pressed: Option<Cap>) -> Vec<(Rect, Cap)> {
+/// and confirming, in `l`. Returns where each key answers a touch. `scale`
+/// shrinks the keys for a screen too short to hold them at their natural
+/// size.
+pub fn keypad(c: &mut Canvas, t: &Theme, f: &Fonts, l: Lang, top: f32, pressed: Option<Cap>, scale: f32) -> Vec<(Rect, Cap)> {
     let m = &t.m;
-    let (size, gx, gy) = (m.dp(PAD_KEY_DP), m.dp(PAD_GAP_X_DP), m.dp(PAD_GAP_Y_DP));
+    let (size, gx, gy) = (m.dp(PAD_KEY_DP) * scale, m.dp(PAD_GAP_X_DP) * scale, m.dp(PAD_GAP_Y_DP) * scale);
     let left = (m.w as f32 - (3.0 * size + 2.0 * gx)) / 2.0;
     let mut keys = Vec::with_capacity(PAD_KEYS.len());
     for (i, &cap) in PAD_KEYS.iter().enumerate() {
         let (row, col) = (i / 3, i % 3);
-        let r = Rect::new(left + col as f32 * (size + gx), top + m.dp(PAD_TOP_DP) + row as f32 * (size + gy), size, size);
+        let r = Rect::new(left + col as f32 * (size + gx), top + m.dp(PAD_TOP_DP) * scale + row as f32 * (size + gy), size, size);
         keys.push((r, cap));
     }
     for &(r, cap) in &keys {
@@ -1931,9 +1934,9 @@ pub fn keypad(c: &mut Canvas, t: &Theme, f: &Fonts, l: Lang, top: f32, pressed: 
             c.fill_circle(cx, cy, r.w / 2.0, fill);
         }
         match cap {
-            Cap::Char(ch) => c.text_center(&f.heading, &ch.to_string(), cx, cy, m.dp(34.0), t.pal.text),
-            Cap::Backspace => c.text_center(&f.body, l.pick(["删除", "刪除", "Delete"]), cx, cy, m.row_title_px, t.pal.accent),
-            _ => c.text_center(&f.heading, l.pick(["解密", "解密", "Decrypt"]), cx, cy, m.row_title_px, Rgba::rgb(255, 255, 255)),
+            Cap::Char(ch) => c.text_center(&f.heading, &ch.to_string(), cx, cy, m.dp(34.0) * scale, t.pal.text),
+            Cap::Backspace => c.text_center(&f.body, l.pick(["删除", "刪除", "Delete"]), cx, cy, m.row_title_px * scale, t.pal.accent),
+            _ => c.text_center(&f.heading, l.pick(["解密", "解密", "Decrypt"]), cx, cy, m.row_title_px * scale, Rgba::rgb(255, 255, 255)),
         }
     }
     keys

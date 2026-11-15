@@ -906,43 +906,56 @@ fn code(cx: &Ctx, mut c: Canvas, user: u32, keys: Keys, checking: bool) -> Frame
         (false, user) => tr!(l, "输入用户 {user} 的锁屏密码", "輸入使用者 {user} 的螢幕鎖定密碼", "Enter user {user}'s screen lock"),
     };
     let note = l.pick(if checking { ["正在验证", "正在驗證", "Checking"] } else { ["解密后可查看本机文件", "解密後可查看本機檔案", "Decrypt to see the phone's files"] });
-    c.text_center(&f.heading, &title, x, m.dp(130.0), m.dp(24.0), t.pal.text);
-    c.text_center(&f.body, note, x, m.dp(166.0), m.sub_px, t.pal.subtitle);
+    // The cover panel is shorter than the inner one. At its natural size the
+    // keypad would bury the title, and the pattern would run past the bottom
+    // edge; below this height the words sit at the top and the control is
+    // drawn to fit what is left.
+    let short = (m.h as f32) < m.dp(700.0);
+    let (title_y, note_y) = if short { (m.dp(48.0), m.dp(84.0)) } else { (m.dp(130.0), m.dp(166.0)) };
+    c.text_center(&f.heading, &title, x, title_y, m.dp(24.0), t.pal.text);
+    c.text_center(&f.body, note, x, note_y, m.sub_px, t.pal.subtitle);
     let mut pattern = None;
-    let bottom = match keys {
+    let (dots_y, skip_cy) = match keys {
         Keys::Letters => {
             let top = m.h as f32 - widgets::keyboard_height(t);
             let caps = widgets::keyboard(&mut c, t, f, l, top, s.layer, s.key_held(), l.pick(DECRYPT));
             if !checking {
                 out.extend(caps.into_iter().map(|(rect, cap)| Hit { rect, action: Action::Type(cap) }));
             }
-            top
+            if short { (m.dp(170.0), m.dp(128.0)) } else { (top - m.dp(92.0), top - m.dp(34.0)) }
         }
         Keys::Pattern => {
-            let span = m.dp(300.0);
-            let cy = m.dp(300.0) + span / 2.0;
+            let (cy, span, skip) = if short {
+                let top = m.dp(150.0);
+                let bottom = m.h as f32 - m.dp(60.0);
+                let span = m.dp(300.0).min(bottom - top).min(m.w as f32 * 0.70);
+                (top + (bottom - top) / 2.0, span, m.dp(120.0))
+            } else {
+                (m.dp(300.0) + m.dp(150.0), m.dp(300.0), m.h as f32 - m.dp(60.0))
+            };
             widgets::pattern_lock(&mut c, t, x, cy, span, &s.pattern);
             if !checking {
-                out.push(Hit { rect: Rect::new(x - span, cy - span, span * 2.0, span * 2.0), action: Action::Pattern });
+                out.push(Hit { rect: Rect::new(x - span / 2.0, cy - span / 2.0, span, span), action: Action::Pattern });
                 pattern = Some((x, cy, span));
             }
-            m.h as f32 - m.dp(26.0)
+            (0.0, skip)
         }
         Keys::Digits => {
-            let top = m.h as f32 - widgets::keypad_height(t);
-            let caps = widgets::keypad(&mut c, t, f, l, top, s.key_held());
+            let room = m.h as f32 - m.dp(200.0);
+            let scale = if short { (room / widgets::keypad_height(t, 1.0)).clamp(0.0, 1.0) } else { 1.0 };
+            let top = m.h as f32 - widgets::keypad_height(t, scale);
+            let caps = widgets::keypad(&mut c, t, f, l, top, s.key_held(), scale);
             if !checking {
                 out.extend(caps.into_iter().map(|(rect, cap)| Hit { rect, action: Action::Type(cap) }));
             }
-            top
+            if short { (m.dp(170.0), m.dp(128.0)) } else { (top - m.dp(92.0), top - m.dp(34.0)) }
         }
     };
     // The dots sit just above whatever types into them; a pattern is its
     // own showing of what has been drawn.
     if keys != Keys::Pattern {
-        widgets::code_dots(&mut c, t, x, bottom - m.dp(92.0), s.code.chars().count());
+        widgets::code_dots(&mut c, t, x, dots_y, s.code.chars().count());
     }
-    let skip_cy = bottom - m.dp(34.0);
     c.text_center(&f.heading, l.pick(NOT_NOW), x, skip_cy, m.row_title_px, t.pal.accent);
     out.push(Hit { rect: Rect::new(x - m.dp(80.0), skip_cy - m.dp(24.0), m.dp(160.0), m.dp(48.0)), action: Action::Skip });
     Frame { header: false, pattern, ..Frame::new(t, c, out, l.pick(DECRYPT), 0.0) }
