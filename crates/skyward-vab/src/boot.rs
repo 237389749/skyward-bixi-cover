@@ -8,7 +8,7 @@
 //! newer kind is taken where the phone describes one, as Android's own
 //! update_engine takes it.
 
-use crate::{BootSlots, MergeStatus, Slot};
+use crate::{BootSlots, MergeStatus, Slot, Starting};
 use anyhow::{bail, Context, Result};
 use skyward_binder::driver::{Binder, Handle};
 use skyward_binder::hidl::{self, Answer, Message};
@@ -89,19 +89,6 @@ fn older<T>(
     let mut read = Answer::new(reply.bytes());
     read.status()?;
     answer(&mut read)
-}
-
-/// What is asked of a boot control here: which slot starts next, what it
-/// holds of the slots, and having a slot start next. The phone's own does
-/// the calls; a test's can remember them, so that what decides which slot
-/// starts can be tried without a phone.
-pub trait Starting {
-    /// The slot the bootloader starts next.
-    fn active(&self) -> Result<Slot>;
-    /// What it holds of the slots now.
-    fn slots(&self) -> Result<BootSlots>;
-    /// Have the bootloader start `slot` next.
-    fn set_active(&self, slot: Slot) -> Result<()>;
 }
 
 impl Starting for BootControl<'_> {

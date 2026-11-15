@@ -62,6 +62,20 @@ impl Slot {
     }
 }
 
+/// What is asked of a boot control here: which slot starts next, what it
+/// holds of the slots, and having a slot start next. The phone's own
+/// (`boot::BootControl`, where there is a phone) does the calls; a test's
+/// can remember them, so that what decides which slot starts can be tried
+/// without a phone.
+pub trait Starting {
+    /// The slot the bootloader starts next.
+    fn active(&self) -> Result<Slot>;
+    /// What it holds of the slots now.
+    fn slots(&self) -> Result<BootSlots>;
+    /// Have the bootloader start `slot` next.
+    fn set_active(&self, slot: Slot) -> Result<()>;
+}
+
 /// What the phone's boot control holds of the slots.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BootSlots {

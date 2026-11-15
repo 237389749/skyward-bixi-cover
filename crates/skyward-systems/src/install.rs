@@ -72,9 +72,10 @@ impl Store {
 ///
 /// This is the whole of what a switch back over an updated slot does to the
 /// phone besides the state — and the one part of it a test cannot ask a real
-/// phone for, so the control is whatever is handed in.
+/// phone for, so the control is whatever is handed in (see
+/// [`skyward_vab::Starting`]).
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
-fn start_at(control: &dyn skyward_vab::boot::Starting, occupied: skyward_vab::Slot) -> anyhow::Result<skyward_vab::Slot> {
+fn start_at(control: &dyn skyward_vab::Starting, occupied: skyward_vab::Slot) -> anyhow::Result<skyward_vab::Slot> {
     let installed = crate::guard::start_from(occupied);
     control.set_active(installed)?;
     Ok(installed)
@@ -494,7 +495,7 @@ mod tests {
     /// A boot control that remembers what it was told to start.
     struct Recorder(std::sync::Mutex<Vec<skyward_vab::Slot>>);
 
-    impl skyward_vab::boot::Starting for Recorder {
+    impl skyward_vab::Starting for Recorder {
         fn active(&self) -> anyhow::Result<skyward_vab::Slot> {
             Ok(skyward_vab::Slot::A)
         }
