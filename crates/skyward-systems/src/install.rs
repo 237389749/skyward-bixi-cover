@@ -3,6 +3,7 @@
 
 use crate::state::{State, Store};
 use crate::{ForgottenSystem, Named, Other, Overview};
+use anyhow::Context;
 use skyward_block::area::HEADER;
 
 /// Where the areas' files are, in the data partition.
@@ -103,6 +104,25 @@ fn start_as_it_stands(control: &dyn skyward_vab::Starting, occupied: skyward_vab
     Ok((installed, left))
 }
 
+/// Whether the state kept at `path` names any system a write over its slot
+/// left behind. A state that is not there names nothing.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn left_behind_at(path: &std::path::Path) -> bool {
+    State::load(path).map(|state| !state.forgotten.is_empty()).unwrap_or(false)
+}
+
+/// Take one of the systems a write over its slot left behind out of the
+/// state, and its root out of the data partition, which has to be open. What
+/// is installed and what is left of the rest stay as they are.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn forget_at(path: &std::path::Path, id: &str) -> anyhow::Result<()> {
+    let mut state = State::load(path)?;
+    let at = state.forgotten.iter().position(|forgotten| forgotten.id == id).with_context(|| format!("no system written over is named {id:?}"))?;
+    let forgotten = state.forgotten.remove(at);
+    forgotten.root.remove().with_context(|| format!("take away the room {id:?} still takes"))?;
+    state.save(path)
+}
+
 #[cfg(target_os = "android")]
 pub use sys::*;
 
@@ -190,6 +210,20 @@ mod sys {
             skyward_block::mount::mount_ro(&by_name().join("metadata"), at)?;
         }
         Ok(())
+    }
+
+    /// Do `work` on /metadata read-only, mounting it for the moment it takes
+    /// where it is not mounted yet, and taking it away again after — the
+    /// recovery's own mount is not what fastbootd has to be handed.
+    fn read_only<T>(work: impl FnOnce() -> Result<T>) -> Result<T> {
+        let at = Path::new(METADATA);
+        if skyward_block::mount::is_mount_point(at)? {
+            return work();
+        }
+        skyward_block::mount::mount_ro(&by_name().join("metadata"), at)?;
+        let done = work();
+        skyward_block::mount::umount(at)?;
+        done
     }
 
     /// Run `work` with /metadata writable, and leave it read-only after.
@@ -560,11 +594,12 @@ mod sys {
     /// those writes left in the data partition; the systems page is the only
     /// place that can give that room back, so it is offered for this alone.
     ///
-    /// Nothing is mounted to answer it: `/metadata` is left as the caller
-    /// found it, because fastbootd has to be handed it that way, and a state
-    /// that cannot be read is one that names nothing.
+    /// The record is read with /metadata mounted read-only for the moment it
+    /// takes and taken away again: a cold start has not mounted it yet, and
+    /// fastbootd has to be handed it as it was found. A state that cannot be
+    /// read is one that names nothing.
     pub fn left_behind() -> bool {
-        State::load(Path::new(PATH)).map(|state| !state.forgotten.is_empty()).unwrap_or(false)
+        read_only(|| Ok(left_behind_at(Path::new(PATH)))).unwrap_or(false)
     }
 
     /// Take away one of the systems a write over its slot left behind: its
@@ -575,14 +610,7 @@ mod sys {
     pub fn forget(id: &str) -> Result<()> {
         ensure!(skyward_block::mount::is_mount_point(data())?, "the data partition is not open");
         resume()?;
-        writable(|| {
-            let path = Path::new(PATH);
-            let mut state = State::load(path)?;
-            let at = state.forgotten.iter().position(|forgotten| forgotten.id == id).with_context(|| format!("no system written over is named {id:?}"))?;
-            let forgotten = state.forgotten.remove(at);
-            forgotten.root.remove().with_context(|| format!("take away the room {id:?} still takes"))?;
-            state.save(path)
-        })
+        writable(|| forget_at(Path::new(PATH), id))
     }
 }
 
@@ -602,6 +630,48 @@ mod tests {
         assert_eq!(sizes(100 << 20, 9 * GB), [GB, 8 * GB]);
         assert_eq!(sizes(20 * GB, 300 * GB), [20 * GB, 32 * GB, 64 * GB, 128 * GB, 256 * GB]);
         assert!(sizes(20 * GB, 10 * GB).is_empty(), "no room for it at all");
+    }
+
+    #[test]
+    fn a_state_that_names_a_system_left_behind_is_one_whose_room_can_be_asked_for() {
+        // A cold start has nothing where the state is kept; writing one there
+        // is what installing the other system and a write over its slot do.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("skyward/systems.toml");
+        assert!(!left_behind_at(&path), "nothing kept, nothing left behind");
+        let (_at, _path, mut state) = crate::guard::tests::phone(b"old boot", b"other system boot");
+        crate::guard::let_go(&mut state, "an update wrote over it");
+        state.save(&path).unwrap();
+        assert!(left_behind_at(&path), "the room the root still takes is named, so the page can be offered for it");
+    }
+
+    #[test]
+    fn taking_back_one_room_removes_that_entry_only_and_leaves_the_others() {
+        // Two systems a write over their slot left behind, taken back one at
+        // a time: the record is what a test on the host can hold, so the
+        // areas are the ones `phone` invents and no file is there to lose.
+        let (_at, _path, mut state) = crate::guard::tests::phone(b"old boot", b"other system boot");
+        let earlier = state.system.as_ref().unwrap().root.clone();
+        state.forgotten.push(crate::state::Forgotten { id: "earlier".into(), name: "Earlier".into(), root: earlier.clone(), why: "an update wrote over it".into() });
+        let id = state.system.as_ref().unwrap().id.clone();
+        crate::guard::let_go(&mut state, "an update wrote over it");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("systems.toml");
+        state.save(&path).unwrap();
+        forget_at(&path, &id).unwrap();
+        let after = State::load(&path).unwrap();
+        assert_eq!(after.forgotten.len(), 1, "the one taken back is gone from the record");
+        assert_eq!(after.forgotten[0].id, "earlier", "and the one let go of before is still named");
+        assert_eq!(after.forgotten[0].root, earlier, "with the room it was left in still its own");
+    }
+
+    #[test]
+    fn taking_back_a_room_the_state_does_not_name_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("systems.toml");
+        crate::state::State::default().save(&path).unwrap();
+        let why = forget_at(&path, "gone").unwrap_err();
+        assert!(format!("{why:#}").contains("no system written over is named"), "the page's line can be understood: {why:#}");
     }
 
     /// A boot control that remembers what it was told to start.

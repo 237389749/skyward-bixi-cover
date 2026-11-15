@@ -1211,7 +1211,8 @@ pub enum Confirm {
     /// Take the other system away.
     RemoveSystem,
     /// Take away the room a system a write over its slot left behind still
-    /// takes, at this place in the list of them the systems page shows.
+    /// takes; the system is named by its id when the page asks for it, so a
+    /// read of the systems between the ask and the swipe cannot move it.
     ForgetSystem,
     /// Install the system the installer holds with the room chosen.
     InstallSystem,
