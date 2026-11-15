@@ -18,6 +18,12 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 const CPU: &str = "/sys/devices/system/cpu";
 const POWER_SUPPLY: &str = "/sys/class/power_supply";
 const SYS_BLOCK: &str = "/sys/class/block";
+/// The property file the packer keeps from the phone maker's recovery, in the
+/// root of the ramdisk, naming the stock build this image was made on.
+const BUILD_PROP: &str = "/prop.default";
+/// The name AOSP gives the same build version, for a phone whose maker's name
+/// is not in its configuration.
+const AOSP_BUILD_VERSION: &str = "ro.build.version.incremental";
 
 /// What the recovery shows about the device. A source that may legitimately
 /// be absent (no battery driver loaded, build properties missing from the
@@ -36,6 +42,11 @@ pub struct DeviceInfo {
     /// Marketed screen diagonal in inches.
     pub screen: Option<f32>,
     pub os_version: Option<String>,
+    /// The stock build the recovery itself was made on, from the property
+    /// file the packer keeps from the phone maker's recovery. The About page
+    /// puts it beside `os_version`, and `tools/verify-release.py` compares it
+    /// with `[stock].version`.
+    pub built_on: Option<String>,
     pub android: Option<String>,
     /// The locale the installed system is built to start in, such as
     /// `zh-CN`.
@@ -159,6 +170,7 @@ pub fn collect(cfg: &DeviceConfig) -> Result<DeviceInfo> {
         panel: (d.width > 0 && d.height > 0).then_some((d.width, d.height)),
         screen: d.diagonal,
         os_version: system.get(&cfg.device.os_version_prop),
+        built_on: build_version(Path::new(BUILD_PROP), &cfg.device.os_version_prop),
         android: system.get("ro.build.version.release"),
         locale: system.get("ro.product.locale"),
         security_patch: system.get("ro.build.version.security_patch").map(|s| s.parse()).transpose()?,
@@ -271,6 +283,19 @@ pub fn installed_props_report(slot: Slot) -> Result<InstalledProps> {
         }
     }
     Ok(out)
+}
+
+/// The stock build the recovery was made on, as the property file the packer
+/// keeps from the phone maker's recovery names it. `name` is the phone's own
+/// name for that version, such as `ro.mi.os.version.incremental`; a phone
+/// that has none falls back to AOSP's. Nothing at all on a system that has no
+/// such file, as Android has not one.
+fn build_version(at: &Path, name: &str) -> Option<String> {
+    let mut props = HashMap::new();
+    if read_props(at, &mut props).is_err() {
+        return None;
+    }
+    props.get(name).or_else(|| props.get(AOSP_BUILD_VERSION)).cloned()
 }
 
 /// Build properties of the system the About page describes.
@@ -586,5 +611,27 @@ mod tests {
         assert!(!said_online(Err(Error::from(ErrorKind::WouldBlock))).unwrap(), "Qualcomm's USB-C connector early in a boot");
         assert!(!said_online(Err(Error::from(ErrorKind::NotFound))).unwrap(), "a supply without the file");
         assert!(said_online(Err(Error::from(ErrorKind::PermissionDenied))).is_err(), "anything else is an error");
+    }
+
+    #[test]
+    fn the_build_the_recovery_was_made_on_is_what_its_own_property_file_names() {
+        // The bixi recovery's prop.default, kept from the stock recovery.
+        let dir = tempfile::tempdir().unwrap();
+        let props = dir.path().join("prop.default");
+        fs::write(
+            &props,
+            "ro.build.id=CP2A.260605.016\nro.build.version.incremental=OS4.0.0.11.XOHCNXM\n\
+             ro.mi.os.version.incremental=OS4.0.0.11.XOHCNXM\nro.secure=0\n",
+        )
+        .unwrap();
+        assert_eq!(build_version(&props, "ro.mi.os.version.incremental").as_deref(), Some("OS4.0.0.11.XOHCNXM"));
+        // A phone that names no version of its own is read by AOSP's name.
+        assert_eq!(build_version(&props, "ro.other.phone.version").as_deref(), Some("OS4.0.0.11.XOHCNXM"));
+        // A system with no such file — Android's own, where the file is not there.
+        assert_eq!(build_version(&dir.path().join("absent"), "ro.mi.os.version.incremental"), None);
+        // A file with no such property, as a phone whose recovery says only AOSP's.
+        let aosp = dir.path().join("aosp.prop");
+        fs::write(&aosp, "ro.build.version.incremental=OS2.0.1.0.VNCCNXM\n").unwrap();
+        assert_eq!(build_version(&aosp, "ro.mi.os.version.incremental").as_deref(), Some("OS2.0.1.0.VNCCNXM"));
     }
 }

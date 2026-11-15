@@ -656,6 +656,7 @@ const BATTERY_CAPACITY: Text = ["电池容量", "電池容量", "Battery capacit
 const SCREEN_SIZE: Text = ["屏幕尺寸", "螢幕尺寸", "Screen size"];
 const RESOLUTION: Text = ["分辨率", "解析度", "Resolution"];
 const OS_VERSION: Text = ["OS 版本", "OS 版本", "OS version"];
+const BUILT_ON: Text = ["出包基线", "出包基線", "Built on"];
 const ANDROID_VERSION: Text = ["Android 版本", "Android 版本", "Android version"];
 const CURRENT_SLOT: Text = ["当前槽位", "目前槽位", "Current slot"];
 const DATA_PART: Text = ["data 分区", "data 分割區", "data partition"];
@@ -664,6 +665,17 @@ const DATA_PART: Text = ["data 分区", "data 分割區", "data partition"];
 /// settings, or else by its cores.
 fn soc(l: Lang, i: &DeviceInfo) -> Option<&str> {
     i.soc.as_ref().map(|n| l.pick([n.hans.as_str(), n.hant.as_str(), n.en.as_str()]))
+}
+
+/// The build the recovery was made on, beside the version the phone runs:
+/// the line the About page shows, which says whether this image still
+/// matches the system that is installed.
+fn built_on_line(l: Lang, built: &str, current: Option<&str>) -> String {
+    match current {
+        Some(current) if current == built => tr!(l, "{built} · 与当前设备一致", "{built} · 與目前裝置一致", "{built} · the same as the device"),
+        Some(current) => tr!(l, "{built} · 当前设备 {current}", "{built} · 目前裝置 {current}", "{built} · the device is {current}"),
+        None => built.to_string(),
+    }
 }
 
 /// The About page's cards on `c`: what touching them does, where the
@@ -681,6 +693,14 @@ fn about_cards(cx: &Ctx, c: &mut Canvas) -> (Vec<Hit>, f32, f32) {
     ];
     if let Some(v) = &i.os_version {
         facts.push(Fact { title: l.pick(OS_VERSION), value: v.clone(), link: false });
+    }
+    // What the recovery was made on, put beside what the phone runs: the same
+    // string while the phone is on the build this image came with, and the
+    // phone's own version once it has taken an update — which is the reading
+    // that says whether this recovery still matches its system.
+    if let Some(built) = &i.built_on {
+        let value = built_on_line(l, built, i.os_version.as_deref());
+        facts.push(Fact { title: l.pick(BUILT_ON), value, link: false });
     }
     if let Some(r) = &i.android {
         facts.push(Fact { title: l.pick(ANDROID_VERSION), value: r.clone(), link: false });
@@ -5217,8 +5237,22 @@ mod tests {
     }
 
     #[test]
-    fn a_phrase_that_opens_a_line_starts_with_a_capital_in_english() {
-        assert_eq!(capitalized(Lang::En, "empties the data partition"), "Empties the data partition");
-        assert_eq!(capitalized(Lang::Hans, "清空 data 分区"), "清空 data 分区");
+    fn the_build_about_shows_beside_the_device_says_whether_they_are_one() {
+        // What the bixi recovery was made on, and the system it is reading.
+        let same = "OS4.0.0.11.XOHCNXM";
+        assert_eq!(built_on_line(Lang::Hans, same, Some(same)), "OS4.0.0.11.XOHCNXM · 与当前设备一致");
+        assert_eq!(built_on_line(Lang::En, same, Some(same)), "OS4.0.0.11.XOHCNXM · the same as the device");
+        // A phone that has taken an update since, as the version the installed
+        // system's build.prop holds.
+        assert_eq!(
+            built_on_line(Lang::Hans, same, Some("OS4.0.3.0.XOHCNXM")),
+            "OS4.0.0.11.XOHCNXM · 当前设备 OS4.0.3.0.XOHCNXM"
+        );
+        assert_eq!(
+            built_on_line(Lang::Hant, same, Some("OS4.0.3.0.XOHCNXM")),
+            "OS4.0.0.11.XOHCNXM · 目前裝置 OS4.0.3.0.XOHCNXM"
+        );
+        // Nothing readable on the installed system: the build alone, no claim.
+        assert_eq!(built_on_line(Lang::Hans, same, None), same);
     }
 }

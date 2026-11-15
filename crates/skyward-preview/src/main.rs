@@ -1603,6 +1603,8 @@ fn nezha(cfg: &DeviceConfig) -> DeviceInfo {
         panel: Some((cfg.display.width, cfg.display.height)),
         screen: cfg.display.diagonal,
         os_version: Some("OS4.0.4.0.XPACNXM".into()),
+        // The build the package the preview draws with was made on.
+        built_on: cfg.stock.as_ref().map(|stock| stock.version.clone()),
         android: Some("17".into()),
         locale: Some("zh-CN".into()),
         security_patch: Some(PatchLevel { year: 2026, month: 10, day: 1 }),

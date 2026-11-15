@@ -8447,6 +8447,7 @@ mod tests {
             panel: Some((W, H)),
             screen: Some(6.73),
             os_version: None,
+            built_on: None,
             android: None,
             locale: None,
             security_patch: None,
