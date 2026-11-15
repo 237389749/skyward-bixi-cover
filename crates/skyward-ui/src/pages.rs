@@ -954,7 +954,7 @@ const UNREADABLE: Text = ["无法读取", "無法讀取", "Unreadable"];
 /// Reboot target picker with a swipe-to-confirm control.
 pub fn reboot(cx: &Ctx) -> Frame {
     let (t, f, s, l) = (cx.t, cx.f, cx.state, cx.state.lang);
-    let mut c = page(cx);
+    let mut c = long_page(cx);
     let mut out = Vec::new();
     let top = t.m.content_top;
     let mut y = widgets::section_first(&mut c, t, f, top, l.pick(["重启到", "重新啟動到", "Reboot to"]));
@@ -991,7 +991,7 @@ pub fn reboot(cx: &Ctx) -> Frame {
     let (label, danger) = confirm_label(Confirm::Reboot, cx.state);
     let track = widgets::confirm(&mut c, t, f, y + t.m.dp(28.0), label, danger, s.confirm);
     out.push(Hit { rect: track, action: Action::Confirm(Confirm::Reboot) });
-    Frame::new(t, c, out, l.pick(REBOOT), top)
+    Frame::new(t, fit(c, t, track.y + track.h), out, l.pick(REBOOT), top)
 }
 
 /// Installing, opened from the home page: the system on the phone now, and
@@ -2611,7 +2611,7 @@ const STOPPING: Text = ["正在停止", "正在停止", "Stopping"];
 /// how far it has come, a way to stop it, and how it ended.
 pub fn relabel(cx: &Ctx) -> Frame {
     let (t, f, s, l) = (cx.t, cx.f, cx.state, cx.state.lang);
-    let mut c = page(cx);
+    let mut c = long_page(cx);
     let mut out = Vec::new();
     let top = t.m.content_top;
     let title = l.pick(RELABEL);
@@ -2635,7 +2635,7 @@ pub fn relabel(cx: &Ctx) -> Frame {
         let (label, danger) = confirm_label(Confirm::Relabel, cx.state);
         let track = widgets::confirm(&mut c, t, f, y + t.m.dp(24.0), label, danger, s.confirm);
         out.push(Hit { rect: track, action: Action::Confirm(Confirm::Relabel) });
-        return Frame::new(t, c, out, title, top);
+        return Frame::new(t, fit(c, t, track.y + track.h), out, title, top);
     };
     let repair = Verb::of(&crate::app::PartKind::Repair);
     let heading = match &job.outcome {
@@ -2649,13 +2649,14 @@ pub fn relabel(cx: &Ctx) -> Frame {
         (total, checked) => tr!(l, "已检查 {checked} 项，共 {total} 项", "已檢查 {checked} 項，共 {total} 項", "{checked} of {total} checked"),
     };
     let y = widgets::progress_card(&mut c, t, f, top, &heading, &detail, Some(share(job.checked, job.total)));
-    match &job.outcome {
+    let bottom = match &job.outcome {
         None => {
             let label = l.pick(if job.stopping { STOPPING } else { STOP });
             let stop = widgets::list(&mut c, t, f, y + t.m.card_gap, &[Row::new(label).trail(Trail::None)]);
             if !job.stopping {
                 out.extend(hits(&stop.rows, &[Action::StopRelabel]));
             }
+            stop.bottom
         }
         Some(end) => {
             let changed = job.changed;
@@ -2675,9 +2676,10 @@ pub fn relabel(cx: &Ctx) -> Frame {
             let y = widgets::footnote(&mut c, t, f, y, &note);
             let finish = widgets::list(&mut c, t, f, y + t.m.card_gap, &[Row::new(l.pick(DONE)).trail(Trail::None)]);
             out.extend(hits(&finish.rows, &[Action::Back]));
+            finish.bottom
         }
-    }
-    Frame { back: job.outcome.is_some(), ..Frame::new(t, c, out, title, top) }
+    };
+    Frame { back: job.outcome.is_some(), ..Frame::new(t, fit(c, t, bottom), out, title, top) }
 }
 
 /// The partitions whose filesystems can be repaired or made afresh as
@@ -4722,22 +4724,22 @@ const BOOT_SLOT: Text = ["启动槽位", "啟動槽位", "Boot slot"];
 /// While an update is in flight the slot stays as the update set it.
 pub fn slot(cx: &Ctx) -> Frame {
     let (t, f, s, i, l) = (cx.t, cx.f, cx.state, cx.info, cx.state.lang);
-    let mut c = page(cx);
+    let mut c = long_page(cx);
     let mut out = Vec::new();
     let top = t.m.content_top;
     let title = l.pick(BOOT_SLOT);
     let Some(current) = i.slot else {
-        widgets::list(&mut c, t, f, top, &[Row::new(l.pick(["本机没有 A/B 槽位", "本機沒有 A/B 槽位", "This phone has no A/B slots"])).trail(Trail::None)]);
-        return Frame::new(t, c, out, title, top);
+        let list = widgets::list(&mut c, t, f, top, &[Row::new(l.pick(["本机没有 A/B 槽位", "本機沒有 A/B 槽位", "This phone has no A/B slots"])).trail(Trail::None)]);
+        return Frame::new(t, fit(c, t, list.bottom), out, title, top);
     };
     let slots = match &s.boot_slots {
         Some(Ok(slots)) => *slots,
         Some(Err(why)) => {
             let list = widgets::list(&mut c, t, f, top, &[Row::new(l.pick(["无法读取启动槽位", "無法讀取啟動槽位", "Couldn't read the boot slots"])).trail(Trail::None)]);
-            widgets::footnote(&mut c, t, f, list.bottom, why);
-            return Frame::new(t, c, out, title, top);
+            let y = widgets::footnote(&mut c, t, f, list.bottom, why);
+            return Frame::new(t, fit(c, t, y), out, title, top);
         }
-        None => return Frame::new(t, c, out, title, top),
+        None => return Frame::new(t, fit(c, t, top), out, title, top),
     };
     let chosen = s.next_slot.unwrap_or(slots.active);
     let y = widgets::section_first(&mut c, t, f, top, l.pick(["下次启动", "下次啟動", "Next boot"]));
@@ -4759,8 +4761,8 @@ pub fn slot(cx: &Ctx) -> Frame {
     let list = widgets::list(&mut c, t, f, y, &rows);
     out.extend(hits(&list.rows, &[Slot::A, Slot::B].map(Action::PickSlot)));
     if let Some(note) = fmt::snapshot_slot_note(l, &i.snapshot) {
-        widgets::footnote(&mut c, t, f, list.bottom, note);
-        return Frame::new(t, c, out, title, top);
+        let y = widgets::footnote(&mut c, t, f, list.bottom, note);
+        return Frame::new(t, fit(c, t, y), out, title, top);
     }
     let note = l.pick([
         "另一个槽位中没有完整的系统时，切换后将无法开机。",
@@ -4771,7 +4773,7 @@ pub fn slot(cx: &Ctx) -> Frame {
     let (label, danger) = confirm_label(Confirm::Slot, cx.state);
     let track = widgets::confirm(&mut c, t, f, y + t.m.dp(24.0), label, danger, s.confirm);
     out.push(Hit { rect: track, action: Action::Confirm(Confirm::Slot) });
-    Frame::new(t, c, out, title, top)
+    Frame::new(t, fit(c, t, track.y + track.h), out, title, top)
 }
 
 const MAIN_SYSTEM: Text = ["主系统", "主系統", "Main system"];

@@ -9856,6 +9856,24 @@ mod tests {
     }
 
     #[test]
+    fn the_reboot_confirm_is_in_the_page_the_cover_panel_scrolls() {
+        // The cover panel is 1208 x 1392, shorter than the inner one: every
+        // target, the slot section and the swipe-to-confirm control must fit
+        // in the page's own height, or the control is drawn where no scroll
+        // can reach it.
+        let (f, i) = (fonts(), info());
+        let mut app = App::new(Screen::Reboot, 1208, 1392, 2.75);
+        let frame = app.frame(&f, &i);
+        let track = frame
+            .hits
+            .iter()
+            .find(|h| h.action == Action::Confirm(Confirm::Reboot))
+            .expect("the reboot page has a swipe-to-confirm control")
+            .rect;
+        assert!(track.y + track.h <= frame.canvas.h as f32, "the page holds the control, so scrolling reaches it");
+    }
+
+    #[test]
     fn letting_go_halfway_does_not_reboot() {
         let (f, i) = (fonts(), info());
         let mut app = App::new(Screen::Reboot, W, H, PPD);
