@@ -6,9 +6,16 @@ English | [简体中文](README.zh-CN.md)
 
 Skyward is a recovery written in Rust, from scratch.
 
+> **Two images are built for this phone.** `bixi` draws on the inner panel and
+> switches to the cover when its own driver says the phone is shut. `bixi-cover-first`
+> draws on the cover from the first frame and never switches: it is the image for a
+> phone whose inner panel is gone, where nothing reports the folded state and the
+> inner connector comes up on a reference panel that is not there. Flash that one only
+> if you are looking at the cover; a whole phone uses `bixi`.
+>
 > **MIX Flip 2 (`bixi`) · 1.0.1** — this branch builds Skyward for the Xiaomi MIX Flip 2
 > (SM8750, Android 17, A/B + dynamic partitions, running `OS4.0.11.XOHCNXM`, built on
-> `OS4.0.0.11.XOHCNXM`). The cover display is the
+> `OS4.0.0.11.XOHCNXM`). The cover display can be the
 > primary screen, `/data` unlocks itself once the password has been kept, images can be
 > kept on a USB stick, `avbctl` flags are written with their before/after difference
 > reported back, and the recovery updates itself from GitHub releases — bare `.img`
