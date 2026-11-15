@@ -30,6 +30,11 @@ covers = false
 panel = "DSI-2"
 # 外屏的背光节点；不写就会拿到 panel0-backlight（内屏那块）。
 backlight = "panel1-backlight"
+# 外屏装在内屏的背面，它的触摸控制器报的是转 180° 之后的坐标：
+# 按左下会被报成右上。点名用外屏之后，那套「合盖才切换」的旋转逻辑
+# 不会触发（见 ui.rs 的 folio），所以必须在这里显式说一次。
+# 内屏版（devices/bixi.toml）不写这行，默认就是 normal。
+orientation = "upside"
 
 [modules]
 sources = ["vendor_boot", "vendor_dlkm", "vendor", "system_dlkm"]

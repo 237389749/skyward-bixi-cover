@@ -339,6 +339,38 @@ pub struct Display {
     /// inner panel's on a foldable.
     #[serde(default)]
     pub backlight: Option<String>,
+    /// Which way round the panel is mounted relative to the controller that
+    /// reports positions for it.
+    ///
+    /// A foldable puts one panel on the back of the other, and the cover's
+    /// controller reports positions turned half a turn from what is drawn
+    /// on it. The phone's own panel reports in the frame the picture is
+    /// drawn in, which is what `normal` means.
+    ///
+    /// Naming the cover with `panel` moves those pages onto it from the
+    /// first frame, and the turn has to be said here too: the recovery's
+    /// own switch only turns a cover it opens by itself.
+    #[serde(default)]
+    pub orientation: Orientation,
+}
+
+/// Which way round the panel is mounted relative to the controller that
+/// reports positions for it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Orientation {
+    /// The controller reports in the frame the picture is drawn in.
+    #[default]
+    Normal,
+    /// The panel is on the back of another: a touch is turned half a turn.
+    Upside,
+}
+
+impl Orientation {
+    /// Whether a touch of this panel is turned half a turn.
+    pub fn upside(self) -> bool {
+        matches!(self, Orientation::Upside)
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -947,6 +979,25 @@ mod tests {
         assert!(DeviceConfig::parse(&format!("{base}partition = \"modem\"\n")).is_ok());
         assert!(DeviceConfig::parse(&format!("{base}partition = \"by-name/modem\"\n")).is_err());
         assert!(DeviceConfig::parse(&format!("{base}partition = \"\"\n")).is_err());
+    }
+
+    #[test]
+    fn a_display_may_say_its_touch_is_turned_half_a_turn() {
+        // Every single-screen phone's controller reports in the frame the
+        // picture is drawn in.
+        let plain = DeviceConfig::parse("[device]\ncodename = \"x\"\n").unwrap();
+        assert_eq!(plain.display.orientation, Orientation::Normal);
+        assert!(!plain.display.orientation.upside());
+
+        // A panel on the back of another reports from the other side.
+        let cover = DeviceConfig::parse("[device]\ncodename = \"x\"\n[display]\norientation = \"upside\"\n").unwrap();
+        assert_eq!(cover.display.orientation, Orientation::Upside);
+        assert!(cover.display.orientation.upside());
+
+        assert!(
+            DeviceConfig::parse("[device]\ncodename = \"x\"\n[display]\norientation = \"sideways\"\n").is_err(),
+            "a mount is one of the named ones"
+        );
     }
 
     #[test]

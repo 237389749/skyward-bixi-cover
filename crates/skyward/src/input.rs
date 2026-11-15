@@ -223,10 +223,16 @@ pub struct Inputs {
     /// The cover screen's own size, for touches landing on it.
     cw: f32,
     ch: f32,
+    /// Whether the panel the pages are laid out on reports its touches
+    /// turned half a turn, as a cover panel on the back of another does.
+    /// Only a configuration that named its panel can be that: a phone that
+    /// draws on its own screen first takes the cover when it shuts, and the
+    /// cover taken then is the one at `cover`, which is turned already.
+    flip: bool,
 }
 
 impl Inputs {
-    pub fn open(w: u32, h: u32, touch_writes: Vec<Write>) -> Result<Self> {
+    pub fn open(w: u32, h: u32, touch_writes: Vec<Write>, flip: bool) -> Result<Self> {
         let fd = unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
         if fd < 0 {
             return Err(io::Error::last_os_error()).context("create inotify instance");
@@ -252,6 +258,7 @@ impl Inputs {
             h: h as f32,
             cw: 0.0,
             ch: 0.0,
+            flip,
         };
         inputs.scan()?;
         if inputs.panel.is_none() {
@@ -277,7 +284,7 @@ impl Inputs {
             eprintln!("input {}: {:?} direct={direct} multitouch={mt} keys={keys}", path.display(), dev.name().unwrap_or("?"));
             if direct && mt && self.panel.is_none() {
                 self.wakeful.add(dev.as_raw_fd())?;
-                self.panel = Some(Panel::new(path.clone(), dev, self.w, self.h, false)?);
+                self.panel = Some(Panel::new(path.clone(), dev, self.w, self.h, self.flip)?);
                 self.seen.insert(path);
                 for w in &self.touch_writes {
                     fs::write(&w.path, &w.value).with_context(|| format!("write {} to {}", w.value, w.path))?;

@@ -1536,7 +1536,12 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
     let mut cover: Option<KmsSurface> = None;
     let mut cover_screen: Option<Canvas> = None;
     let (mut cw, mut ch) = (0u32, 0u32);
-    let mut inputs = Inputs::open(w, h, cfg.touch.writes.clone())?;
+    // A configuration that named its cover panel draws on a screen the
+    // phone's own panel is on the back of, so what its controller reports is
+    // turned half a turn: `orientation` says so, and the touches are turned
+    // back. A phone that starts on its own screen never needs it, since the
+    // cover it opens when it shuts is turned by the switch itself.
+    let mut inputs = Inputs::open(w, h, cfg.touch.writes.clone(), cfg.display.orientation.upside())?;
     let started = Instant::now();
     let mut touch_known = false;
     // adbd and fastbootd ask over it to go over to fastboot and back.
