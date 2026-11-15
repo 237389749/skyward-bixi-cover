@@ -47,15 +47,17 @@ pub fn next_slot() -> Result<Slot> {
 }
 
 /// The systems as they are now: the installed one named by its build's
-/// properties, its version by `version_prop`, and whether its vendor_boot
-/// or dtbo in the slot that starts next changed since the second system
-/// was installed.
+/// properties, its version by `version_prop`, and whether anything has
+/// been written over what the second system was installed against — the
+/// installed system's boot set and vendor_boot and dtbo, or the other
+/// system's own boot set in the slot it was switched into. An update run
+/// from the other system writes exactly there.
 fn read(version_prop: &str) -> Result<Overview> {
     let current = skyward_vab::current_slot()?.context("not an A/B phone")?;
     let props = skyward_info::installed_props(current)?;
     let state = install::state()?;
     let changed = match state.system {
-        Some(_) => install::changed(&state, next_slot()?)?,
+        Some(_) => install::changed(&state, current)?,
         None => false,
     };
     Ok(install::overview(&state, skyward_systems::installed_name(&props, version_prop), changed))

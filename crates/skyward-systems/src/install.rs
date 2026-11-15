@@ -180,8 +180,69 @@ mod sys {
             ensure!(update == skyward_vab::SnapshotState::None, "an update is in flight ({update:?}), and the installed system has to start once more to merge it");
             state.system.as_ref().context("no other system is installed")?.root.check_header()?;
         }
+        if to == Who::Installed {
+            let slot = match state.occupied.as_deref() {
+                Some(suffix) => Slot::from_suffix(suffix).with_context(|| format!("the other system is in slot {suffix:?}"))?,
+                None => next,
+            };
+            written_over(&state, slot)?;
+        }
         let (path, program) = (Path::new(PATH), program());
         writable(|| with_store(&state, |device| switch::switch(&Places { state: path, by_name: by_name(), store: device, program: &program }, next, to)))
+    }
+
+    /// Put the installed system's boot set back for the sake of erasing the
+    /// data partition or wiping the other system away: the switch back is
+    /// what makes those safe, so it goes through even where the saved set
+    /// is no longer the one the partitions hold — there is nothing left to
+    /// protect once the other system is being taken away, and refusing
+    /// would leave a phone with nothing that starts. What was written over
+    /// is said, so it is not mistaken for the installed system's own set.
+    fn switch_back_for_erase(state: &State, slot: Slot) -> Result<()> {
+        if let Err(why) = written_over(state, slot) {
+            let _ = skyward_sys::kmsg(&format!("the installed system's partitions were written over before this: {why:#}"));
+        }
+        let (path, program) = (Path::new(PATH), program());
+        writable(|| with_store(state, |device| switch::switch(&Places { state: path, by_name: by_name(), store: device, program: &program }, slot, Who::Installed)))
+    }
+
+    /// Refuse a switch back that would put a boot set saved before onto a
+    /// system that is no longer the one it was saved from.
+    ///
+    /// The installed system's boot set is saved before the other system's
+    /// is written over it, and that copy is written back when the switch is
+    /// undone. The copy is worth only what the partitions it came from are
+    /// worth, and an update of the installed system — run from the other
+    /// system, which is where the stock updater writes, the slot that does
+    /// not start next — replaces exactly those partitions. Writing the copy
+    /// back then starts the phone with the old boot image and the new
+    /// system and vendor partitions: it does not come up, or it comes up
+    /// part way and crashes.
+    ///
+    /// So say so, with what can be done about it, instead of writing and
+    /// leaving a phone that has to be got out of with fastboot and no
+    /// explanation.
+    fn written_over(state: &State, slot: Slot) -> Result<()> {
+        let (Some(saved), Some(system)) = (&state.saved, &state.system) else { return Ok(()) };
+        ensure!(
+            holds(by_name(), slot, &system.set)?,
+            "the other system's boot set is no longer in the partitions of slot {}, so something wrote over it; installing it again is the safe way back",
+            slot.suffix()
+        );
+        let installed = slot.other();
+        ensure!(
+            holds(by_name(), installed, saved)?,
+            "the installed system's boot set in slot {} is not the one that was saved, so an update has replaced it; writing the saved one back would start the phone with an old boot image and a new system - delete the other system and install it again",
+            installed.suffix()
+        );
+        for (name, want) in [("vendor_boot", &system.vendor_boot), ("dtbo", &system.dtbo)] {
+            ensure!(
+                sum_of(&store::partition(by_name(), name, installed))? == *want,
+                "the installed system's {name} in slot {} was replaced after the other system was installed, so the other system is not what it was installed as - delete it and install it again",
+                installed.suffix()
+            );
+        }
+        Ok(())
     }
 
     /// Finish a switch cut off before, where one was; says whether there
@@ -204,7 +265,7 @@ mod sys {
         let Some(slot) = state.occupied.as_deref().map(|s| Slot::from_suffix(s).with_context(|| format!("the other system is in slot {s:?}"))).transpose()? else {
             return Ok(false);
         };
-        switch_to(slot, Who::Installed)?;
+        switch_back_for_erase(&state, slot)?;
         Ok(true)
     }
 
@@ -224,12 +285,54 @@ mod sys {
         Ok(sum.finalize().iter().map(|b| format!("{b:02x}")).collect())
     }
 
-    /// Whether the installed system's vendor_boot or dtbo in `slot` differ
-    /// from when the other system was installed.
-    pub fn changed(state: &State, slot: Slot) -> Result<bool> {
+    /// Whether the boot partitions of `slot` still hold the boot set `saved`
+    /// names, as many images of it as the phone keeps: what was saved is
+    /// worth only what the partitions it came from are worth, since a
+    /// switch back writes the saved copy into them.
+    fn holds(by_name: &Path, slot: Slot, saved: &crate::state::Saved) -> Result<bool> {
+        if sum_of(&store::partition(by_name, store::BOOT, slot))? != saved.boot {
+            return Ok(false);
+        }
+        if saved.init_boot.is_empty() {
+            return Ok(true);
+        }
+        Ok(sum_of(&store::partition(by_name, store::INIT_BOOT, slot))? == saved.init_boot)
+    }
+
+    /// Whether anything has been written over what the other system was
+    /// installed against: the installed system's boot set and the
+    /// vendor_boot and dtbo it starts with, in the slot that holds it; or
+    /// the other system's own boot set, in the slot the state says it is in.
+    ///
+    /// An update of the installed system, run from the other system — which
+    /// is where the stock updater writes, the slot that does not start next
+    /// — changes exactly those partitions. What the state kept of them is
+    /// then no longer what they hold, and the page has to say so instead of
+    /// reading as unchanged.
+    pub fn changed(state: &State, current: Slot) -> Result<bool> {
         let Some(system) = &state.system else { return Ok(false) };
-        Ok(sum_of(&store::partition(by_name(), "vendor_boot", slot))? != system.vendor_boot
-            || sum_of(&store::partition(by_name(), "dtbo", slot))? != system.dtbo)
+        let occupied = match &state.occupied {
+            Some(suffix) => Some(Slot::from_suffix(suffix).with_context(|| format!("the slot {suffix:?} the other system is in"))?),
+            None => None,
+        };
+        // The installed system's slot: the other system runs from the one
+        // the state says its boot set is in, so the installed system is in
+        // the other one. With no switch made, it is the one the phone runs.
+        let installed = match occupied {
+            Some(occupied) => occupied.other(),
+            None => current,
+        };
+        let mut changed = false;
+        if let Some(saved) = &state.saved {
+            changed |= !holds(by_name(), installed, saved)?;
+        }
+        for (name, want) in [("vendor_boot", &system.vendor_boot), ("dtbo", &system.dtbo)] {
+            changed |= sum_of(&store::partition(by_name(), name, installed))? != *want;
+        }
+        if let Some(occupied) = occupied {
+            changed |= !holds(by_name(), occupied, &system.set)?;
+        }
+        Ok(changed)
     }
 
     /// Install the system in the package `zip`, whose contents are
