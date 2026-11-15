@@ -163,8 +163,15 @@ jobs:
           # A phone whose own vendor programs need libraries the stock recovery
           # does not carry keeps them in <codename>_extra/, laid out as the
           # recovery's own root; they go into the image along with the binary.
+          # A variant of the same phone shares its extra folder: the files a
+          # recovery needs that the stock one does not carry are the phone's,
+          # not the variant's, and bixi-cover-first is bixi with the pages
+          # put on its cover. Without this the cover image would lose the
+          # OMAPI service and its two NDK libraries, and with them /data.
           extra=()
-          if [ -d "${DEVICE}_extra" ]; then extra=(--extra "${DEVICE}_extra"); fi
+          base="${DEVICE%%-*}"
+          if [ -d "${DEVICE}_extra" ]; then extra=(--extra "${DEVICE}_extra");
+          elif [ -d "${base}_extra" ]; then extra=(--extra "${base}_extra"); fi
           dist/skyward-pack recovery --stock stock/recovery.img --binary dist/skyward --system-init dist/system-init \
             --config "devices/$DEVICE.toml" --font resources/fonts/MiSansVF.ttf --mono resources/fonts/KirkMono-Regular.ttf \
             --mono-license resources/fonts/KirkMono-OFL.txt "${extra[@]}" --out "out/$name.img"
@@ -177,8 +184,15 @@ jobs:
           DEVICE: ${{ matrix.device }}
           NAME: ${{ steps.pack.outputs.name }}
         run: |
+          # A variant of the same phone shares its extra folder: the files a
+          # recovery needs that the stock one does not carry are the phone's,
+          # not the variant's, and bixi-cover-first is bixi with the pages
+          # put on its cover. Without this the cover image would lose the
+          # OMAPI service and its two NDK libraries, and with them /data.
           extra=()
-          if [ -d "${DEVICE}_extra" ]; then extra=(--extra "${DEVICE}_extra"); fi
+          base="${DEVICE%%-*}"
+          if [ -d "${DEVICE}_extra" ]; then extra=(--extra "${DEVICE}_extra");
+          elif [ -d "${base}_extra" ]; then extra=(--extra "${base}_extra"); fi
           version=()
           if [ "$GITHUB_REF_TYPE" = tag ]; then version=(--version "${GITHUB_REF_NAME#v}"); fi
           python3 tools/verify-release.py "out/$NAME.img" --config "devices/$DEVICE.toml" \
