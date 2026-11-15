@@ -3581,6 +3581,10 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                         let task = updates::Task::DropBrowser { dir: PathBuf::from(dir), path };
                         plugin_worker = Some(updates::Worker::start(task, servers.clone())?);
                     }
+                    // The page asked again for a full browser already on the
+                    // phone: the look at boot can run before the data partition
+                    // is open, and the plugin is far too big to download twice.
+                    Effect::ReadPlugin => app.plugin_seen(crate::full::plugin().is_some(), None),
                     // adbd reads the port once, as it starts; asked to listen
                     // on the network it is started again, which the cable's
                     // own transport survives.

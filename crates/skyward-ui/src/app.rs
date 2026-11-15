@@ -2733,6 +2733,11 @@ pub enum Effect {
     /// Take the full browser off the phone, telling how it went with
     /// [`App::plugin_dropped`].
     DropPlugin,
+    /// Look again for the full browser already on the phone. What the
+    /// first look at boot saw may have been a data partition not yet open,
+    /// and the page has to tell the owner what is there, not what was
+    /// readable then.
+    ReadPlugin,
     /// Write the Skyward build kept at `path` in `place` into the recovery
     /// partitions, telling how it goes with [`App::skyward_progress`] and
     /// [`App::skyward_ended`].
@@ -6032,6 +6037,13 @@ impl App {
             // it opens, once a network is joined and nothing has been heard.
             Screen::Update => {
                 let mut fx = vec![Effect::ReadUpdate];
+                // The look at boot happens before the data partition
+                // opens, so a plugin that is there can read as absent.
+                // The page asks again each time it opens, and a download
+                // under way is left to say how it went.
+                if !self.state.plugin.there && self.state.plugin.job.is_none() {
+                    fx.push(Effect::ReadPlugin);
+                }
                 if self.state.update_server && matches!(self.state.check, Check::Idle | Check::Failed(_)) && self.state.online() {
                     self.state.check = Check::Asking;
                     fx.push(Effect::CheckUpdate);
