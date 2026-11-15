@@ -188,6 +188,7 @@ pub(crate) mod tests {
             }),
             occupied: Some("_a".into()),
             switching: Some(Switching { to: Who::Installed, slot: "_a".into(), saved: false }),
+            forgotten: Some(Forgotten { id: "gone".into(), root: area("/data/skyward/systems/gone", 1 << 20), why: "an update wrote over it".into() }),
         };
         state.save(&path).unwrap();
         assert_eq!(State::load(&path).unwrap(), state);
