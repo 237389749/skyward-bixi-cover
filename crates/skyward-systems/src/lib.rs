@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 
 pub mod boot;
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
 mod guard;
 pub mod install;
 pub mod package;

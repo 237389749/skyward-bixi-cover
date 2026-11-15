@@ -186,36 +186,63 @@ mod sys {
                 Some(suffix) => Slot::from_suffix(suffix).with_context(|| format!("the other system is in slot {suffix:?}"))?,
                 None => next,
             };
-            guard::written_over(by_name(), &state, slot)?;
+            if let Err(why) = guard::written_over(by_name(), &state, slot) {
+                return start_as_it_is(slot, &why);
+            }
         }
         let (path, program) = (Path::new(PATH), program());
         writable(|| with_store(&state, |device| switch::switch(&Places { state: path, by_name: by_name(), store: device, program: &program }, next, to)))
     }
 
     /// Put the installed system's boot set back for the sake of erasing the
-    /// data partition or wiping the other system away: the switch back is
-    /// what makes those safe, so it goes through even where the saved set
-    /// is no longer the one the partitions hold — there is nothing left to
-    /// protect once the other system is being taken away, and refusing
-    /// would leave a phone with nothing that starts. What was written over
-    /// is said, so it is not mistaken for the installed system's own set.
+    /// data partition or wiping the other system away, where it is still the
+    /// boot set the partitions hold.
+    ///
+    /// Where it is not — an update wrote the installed system's slot while
+    /// the other system ran — the saved copy is let go and the bootloader is
+    /// pointed at the slot as it stands: what is there is the updated
+    /// system's own boot image beside its own system and vendor, which
+    /// starts itself. Writing the copy back would start the phone with a
+    /// boot image from before the update over a system from after it. The
+    /// erase goes on either way, because the data partition being erased is
+    /// not something the other system has to start for.
     fn switch_back_for_erase(state: &State, slot: Slot) -> Result<()> {
         if let Err(why) = guard::written_over(by_name(), state, slot) {
-            let _ = skyward_sys::kmsg(&format!("the installed system's partitions were written over before this: {why:#}"));
+            return start_as_it_is(slot, &why);
         }
         let (path, program) = (Path::new(PATH), program());
         writable(|| with_store(state, |device| switch::switch(&Places { state: path, by_name: by_name(), store: device, program: &program }, slot, Who::Installed)))
     }
 
-    /// Refuse a switch back that would put a boot set saved before onto a
-    /// system that is no longer the one it was saved from; see
-    /// [`guard::written_over`].
+    /// Have the bootloader start `slot` as it stands, writing no boot set:
+    /// what is in its partitions is the system that was updated there, its
+    /// own boot image beside its own system and vendor, and that set starts
+    /// itself and merges what an update left to merge as it does.
     ///
-    /// It is kept in [`guard`] rather than here because what decides it is
-    /// the same on a phone and in a test, where the boot partitions are a
-    /// directory of files: this is the one part of the store that stands
-    /// between a phone that starts and one that has to be got out of with
-    /// fastboot, and it is tried without a phone for that reason.
+    /// This is what a switch back does when the saved copy is not the boot
+    /// set the partitions hold any more. Writing the copy back — which is
+    /// what a switch back does when nothing has been written over — would
+    /// start the phone with a boot image from before an update over the
+    /// system and vendor from after it, and it would not come up, or it
+    /// would come up part way and crash. What was saved is let go instead,
+    /// and said in kmsg, so a phone that then starts from an updated slot
+    /// has an account of why it started as it was.
+    fn start_as_it_is(slot: Slot, why: &anyhow::Error) -> Result<()> {
+        let (binder, hardware) = (skyward_binder::driver::Binder::open()?, skyward_binder::driver::Binder::hardware()?);
+        let control = skyward_vab::boot::BootControl::open(&binder, &hardware)?;
+        control.set_active(slot)?;
+        let _ = skyward_sys::kmsg(&format!(
+            "the installed system's partitions were written over ({why:#}); slot {} starts as it is, and the saved boot set is let go rather than written back",
+            slot.letter()
+        ));
+        writable(|| {
+            let path = Path::new(PATH);
+            let mut now = State::load(path)?;
+            now.occupied = None;
+            now.saved = None;
+            now.save(path)
+        })
+    }
 
     /// Finish a switch cut off before, where one was; says whether there
     /// was one.
@@ -232,13 +259,13 @@ mod sys {
     /// is, as everything that writes or erases the installed system first
     /// does; says whether it had to.
     ///
-    /// This is the switch back a user would ask for, and it is refused where
-    /// the partitions were written over since the copy was saved: a boot
-    /// image from before an update, over a system and vendor that are after
-    /// it, does not start, or starts part way and crashes. The one place
-    /// that goes through regardless is [`Self::remove`], because taking the
-    /// other system away is what is being done there and there is nothing
-    /// left to protect.
+    /// Where the saved copy is not what the partitions hold any more — an
+    /// update wrote the installed system's slot while the other system ran
+    /// — the copy is let go and the bootloader is pointed at the slot as it
+    /// stands instead: a boot image from before the update over a system
+    /// from after it does not start, or starts part way and crashes, while
+    /// the updated slot starts itself. Either way the phone has somewhere
+    /// to start from, which refusing to switch would not give it.
     pub fn ensure_installed() -> Result<bool> {
         resume()?;
         let state = state()?;
@@ -311,8 +338,8 @@ mod sys {
                 root: root.clone(),
                 set,
                 own_ramdisk,
-                vendor_boot: sum_of(&store::partition(by_name(), "vendor_boot", slot))?,
-                dtbo: sum_of(&store::partition(by_name(), "dtbo", slot))?,
+                vendor_boot: guard::sum_of(&store::partition(by_name(), "vendor_boot", slot))?,
+                dtbo: guard::sum_of(&store::partition(by_name(), "dtbo", slot))?,
             })
         })();
         match made {
