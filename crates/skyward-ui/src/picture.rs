@@ -166,11 +166,13 @@ mod tests {
 
     #[test]
     fn a_picture_lays_itself_on_a_page_and_says_where_it_ends() {
-        let pixels = [[255, 255, 255, 255]; 4];
-        let png = png_of(2, 2, &pixels);
+        let pixels = [[255, 255, 255, 255]; 200];
+        let png = png_of(20, 10, &pixels);
         let mut page = Canvas::new(40, 40);
+        // Twenty across, narrowed to the eight the page has room for, is
+        // four tall: laid at row four it ends at row eight.
         let bottom = drawn(&mut page, &png, 4.0, 4.0, 8.0).expect("a PNG draws");
-        assert_eq!(bottom, 12.0, "a square picture narrowed to 8 is 8 tall");
+        assert_eq!(bottom, 8.0, "twenty across narrowed to eight is four tall, and it starts at four");
         let at = ((4 * 40 + 4) * 4) as usize;
         assert_eq!(&page.data[at..at + 4], &[255, 255, 255, 255], "the pixel where the picture was laid is the picture's");
     }
