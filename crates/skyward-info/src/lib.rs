@@ -170,7 +170,11 @@ pub fn collect(cfg: &DeviceConfig) -> Result<DeviceInfo> {
         panel: (d.width > 0 && d.height > 0).then_some((d.width, d.height)),
         screen: d.diagonal,
         os_version: system.get(&cfg.device.os_version_prop),
-        built_on: build_version(Path::new(BUILD_PROP), &cfg.device.os_version_prop),
+        built_on: build_version(Path::new(BUILD_PROP), &cfg.device.os_version_prop, cfg.stock.as_ref().map(|stock| stock.version.as_str()))
+            // A recovery whose own property file cannot be read still came
+            // from the build the configuration names, which the verifier
+            // holds the image to; the page shows that rather than nothing.
+            .or_else(|| cfg.stock.as_ref().map(|stock| stock.version.clone())),
         android: system.get("ro.build.version.release"),
         locale: system.get("ro.product.locale"),
         security_patch: system.get("ro.build.version.security_patch").map(|s| s.parse()).transpose()?,
@@ -285,17 +289,38 @@ pub fn installed_props_report(slot: Slot) -> Result<InstalledProps> {
     Ok(out)
 }
 
+/// Whether `one` and `other` name the same stock build. The phone maker's
+/// recovery leaves the channel its package carries at the end off — the
+/// prop.default of the bixi recovery says `OS4.0.0.11.XOHCN` where the
+/// package says `OS4.0.0.11.XOHCNXM` — so a version of exactly two letters
+/// more than the other is the same build. `tools/verify-release.py` holds
+/// [stock].version to the same rule, and the About page holds the two
+/// versions it puts side by side to it.
+pub fn same_build(one: &str, other: &str) -> bool {
+    if one == other {
+        return true;
+    }
+    let (short, long) = if other.len() >= one.len() { (one, other) } else { (other, one) };
+    long.len() == short.len() + 2 && long.starts_with(short) && long[short.len()..].chars().all(|c| c.is_ascii_alphabetic())
+}
+
 /// The stock build the recovery was made on, as the property file the packer
 /// keeps from the phone maker's recovery names it. `name` is the phone's own
 /// name for that version, such as `ro.mi.os.version.incremental`; a phone
-/// that has none falls back to AOSP's. Nothing at all on a system that has no
-/// such file, as Android has not one.
-fn build_version(at: &Path, name: &str) -> Option<String> {
+/// that has none falls back to AOSP's. A phone whose property file names the
+/// build `stock` does without its channel is named by the package's version
+/// of it, which is the form the config and the release assets carry. Nothing
+/// at all on a system that has no such file, as Android has not one.
+fn build_version(at: &Path, name: &str, stock: Option<&str>) -> Option<String> {
     let mut props = HashMap::new();
     if read_props(at, &mut props).is_err() {
         return None;
     }
-    props.get(name).or_else(|| props.get(AOSP_BUILD_VERSION)).cloned()
+    let found = props.get(name).or_else(|| props.get(AOSP_BUILD_VERSION))?;
+    Some(match stock {
+        Some(stock) if same_build(found, stock) => stock.to_string(),
+        _ => found.clone(),
+    })
 }
 
 /// Build properties of the system the About page describes.
@@ -620,18 +645,25 @@ mod tests {
         let props = dir.path().join("prop.default");
         fs::write(
             &props,
-            "ro.build.id=CP2A.260605.016\nro.build.version.incremental=OS4.0.0.11.XOHCNXM\n\
-             ro.mi.os.version.incremental=OS4.0.0.11.XOHCNXM\nro.secure=0\n",
+            "ro.build.id=CP2A.260605.016\nro.build.version.incremental=OS4.0.0.11.XOHCN\n\
+             ro.mi.os.version.incremental=OS4.0.0.11.XOHCN\nro.secure=0\n",
         )
         .unwrap();
-        assert_eq!(build_version(&props, "ro.mi.os.version.incremental").as_deref(), Some("OS4.0.0.11.XOHCNXM"));
+        let mi = "ro.mi.os.version.incremental";
+        let stock = Some("OS4.0.0.11.XOHCNXM");
+        // The stock recovery leaves the channel off; the package's name for
+        // the same build is what the page shows, as verify-release.py holds it.
+        assert_eq!(build_version(&props, mi, stock).as_deref(), Some("OS4.0.0.11.XOHCNXM"));
+        assert_eq!(build_version(&props, mi, None).as_deref(), Some("OS4.0.0.11.XOHCN"));
         // A phone that names no version of its own is read by AOSP's name.
-        assert_eq!(build_version(&props, "ro.other.phone.version").as_deref(), Some("OS4.0.0.11.XOHCNXM"));
+        assert_eq!(build_version(&props, "ro.other.phone.version", None).as_deref(), Some("OS4.0.0.11.XOHCN"));
+        // Another build on the same phone line is not the one the package is.
+        assert_eq!(build_version(&props, mi, Some("OS4.0.3.0.XOHCNXM")).as_deref(), Some("OS4.0.0.11.XOHCN"));
         // A system with no such file — Android's own, where the file is not there.
-        assert_eq!(build_version(&dir.path().join("absent"), "ro.mi.os.version.incremental"), None);
+        assert_eq!(build_version(&dir.path().join("absent"), mi, stock), None);
         // A file with no such property, as a phone whose recovery says only AOSP's.
         let aosp = dir.path().join("aosp.prop");
         fs::write(&aosp, "ro.build.version.incremental=OS2.0.1.0.VNCCNXM\n").unwrap();
-        assert_eq!(build_version(&aosp, "ro.mi.os.version.incremental").as_deref(), Some("OS2.0.1.0.VNCCNXM"));
+        assert_eq!(build_version(&aosp, mi, None).as_deref(), Some("OS2.0.1.0.VNCCNXM"));
     }
 }

@@ -21,7 +21,7 @@ use crate::theme::Theme;
 use crate::tr;
 use crate::icons::{self, Icon};
 use crate::widgets::{self, Caption, Detail, Fact, Outline, Row, Spec, SystemCard, SystemMark, Tone, Trail};
-use skyward_info::{DeviceInfo, VERSION};
+use skyward_info::{same_build, DeviceInfo, VERSION};
 use skyward_install::{Outcome, Reflash, Refusal, Stage};
 use skyward_net::download::Progress;
 use skyward_net::supplicant::Security;
@@ -669,10 +669,12 @@ fn soc(l: Lang, i: &DeviceInfo) -> Option<&str> {
 
 /// The build the recovery was made on, beside the version the phone runs:
 /// the line the About page shows, which says whether this image still
-/// matches the system that is installed.
+/// matches the system that is installed. The two are one build when they
+/// differ only by the channel the package carries at its end, as the
+/// recovery's own property file leaves that off.
 fn built_on_line(l: Lang, built: &str, current: Option<&str>) -> String {
     match current {
-        Some(current) if current == built => tr!(l, "{built} · 与当前设备一致", "{built} · 與目前裝置一致", "{built} · the same as the device"),
+        Some(current) if same_build(built, current) => tr!(l, "{built} · 与当前设备一致", "{built} · 與目前裝置一致", "{built} · the same as the device"),
         Some(current) => tr!(l, "{built} · 当前设备 {current}", "{built} · 目前裝置 {current}", "{built} · the device is {current}"),
         None => built.to_string(),
     }
@@ -5242,6 +5244,12 @@ mod tests {
         let same = "OS4.0.0.11.XOHCNXM";
         assert_eq!(built_on_line(Lang::Hans, same, Some(same)), "OS4.0.0.11.XOHCNXM · 与当前设备一致");
         assert_eq!(built_on_line(Lang::En, same, Some(same)), "OS4.0.0.11.XOHCNXM · the same as the device");
+        // The recovery's own property file leaves the channel off the build
+        // it was made on; the phone on that build is still on that build.
+        assert_eq!(
+            built_on_line(Lang::Hans, "OS4.0.0.11.XOHCN", Some(same)),
+            "OS4.0.0.11.XOHCN · 与当前设备一致"
+        );
         // A phone that has taken an update since, as the version the installed
         // system's build.prop holds.
         assert_eq!(
