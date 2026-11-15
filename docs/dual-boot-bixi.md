@@ -154,6 +154,28 @@ store 的三个 entry 分工是固定的（`store.rs`）：`entry 0` 与 `entry 
 确认切换是**停下并报错**，而不是悄悄写第二遍。
 
 
+### 5.3 第二系统在跑时主系统被 OTA 覆盖
+
+第二系统运行时它是 active 槽，原厂 `update_engine` 写的是**非活动**那一槽，也就是
+主系统的槽：`boot` / `vendor_boot` / `dtbo` 变新，`system` / `vendor` 由 snapshot
+合并成新的。那一套是自洽的，自己起得来；但 store 里 `saved` 那份是**旧**的启动集。
+
+所以切回主系统时不再写 boot set，只把 bootloader 指到那一槽（`guard::start_from`：
+occupied 槽的另一槽），`saved` 作废，并把**第二系统的记录**（`system`、`occupied`）
+一起清掉——三样一起清，是因为那里已经没有任何槽装着第二系统的启动集了，它的 root
+成了 `/data` 里的孤儿。只清 `saved`、留着 `system` 会让 `occupied == None` 的每一条
+推理都建立在错前提上：再切一次「切到第二系统」会把那一槽现在的内容当成主系统的副
+本存进 `saved`，之后每次切回主系统都在起第二系统（这一串已在测试里钉住：
+`once_the_other_systems_slot_is_let_go_of_there_is_nothing_left_to_switch_to`）。
+
+用户看到的是系统页回到「未安装第二系统」。要用就重装：`install` 会复用
+`/data/skyward/systems` 里那份 store（`state.store` 还留着），旧的 root 文件是孤儿
+area，重装时按新 id 建新 area，孤儿那份需要人工删（`/data/skyward/systems/*.img`）。
+
+抹 data 走同一条路：`switch_back_for_erase` 也被覆盖就只 `set_active`，抹 data
+本身不依赖第二系统能不能起来。卸掉第二系统时 root 由 `remove()` 在切换**之前**取
+出来再删，不会因为记录被清而漏删成孤儿。
+
 ## 6. 验收清单（等主人点头再做，按顺序）
 
 1. 先备份并记下两槽 `boot` / `init_boot` / `vbmeta` 的 sha256（`boot_hashes.txt` 已有基线）；

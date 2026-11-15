@@ -4,7 +4,7 @@
 //! recovery partitions: on a thread of their own that tells the screen how
 //! far they have come.
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, ensure, Context, Result};
 use skyward_install::upgrade;
 use skyward_net::download::{self, Damaged, Failure, NoRoom, Progress, Refused, Sum};
 use skyward_net::github::{self, Build, Newest};
@@ -435,14 +435,23 @@ enum Again {
 
 /// Unpack the plugin `zip` into `dir`, and answer with what it takes there.
 /// A name that would reach outside `dir` is refused rather than written
-/// where it points, and the modes the zip carries are kept: the Chromium in
-/// it has to be run, and a file that lost its `x` cannot be.
+/// where it points, and the modes the zip carries are kept.
+///
+/// One file has to be run — the Chromium itself — and a file that lost its
+/// `x` cannot be. The rest of the four thousand files in it are data, packs
+/// and libraries that nothing runs. A phone keeping a plugin on `/data/media`
+/// is a FUSE view where a mode is close to a no-op, so a mode the phone
+/// declined is not a reason to throw away an unpack of a gigabyte: the ones
+/// it declined are counted, and only the Chromium's own is fatal.
 fn unpack(zip: &Path, dir: &Path) -> Result<u64> {
     use std::os::unix::fs::PermissionsExt;
     let file = fs::File::open(zip).with_context(|| format!("open {}", zip.display()))?;
     let mut archive = zip::ZipArchive::new(file).with_context(|| format!("read {} as a zip", zip.display()))?;
     fs::create_dir_all(dir).with_context(|| format!("make {}", dir.display()))?;
     let mut bytes = 0u64;
+    let mut declined = 0usize;
+    let mut first_declined: Vec<String> = Vec::new();
+    let mut chromium_declined = false;
     for at in 0..archive.len() {
         let mut entry = archive.by_index(at).with_context(|| format!("the zip's entry {at}"))?;
         let Some(name) = entry.enclosed_name() else {
@@ -462,15 +471,25 @@ fn unpack(zip: &Path, dir: &Path) -> Result<u64> {
             out.metadata().map(|m| m.len()).unwrap_or(0)
         };
         bytes += written;
-        // Chromium has to be run, and the shell of it read: a mode the
-        // archive carried and the phone would not take is a plugin that
-        // cannot start, said here rather than at the first page that needs
-        // it. (Where the phone keeps it matters too: a folder whose files
-        // cannot be made executable, as /data/media's are, will fail here.)
         if let Some(mode) = entry.unix_mode() {
-            fs::set_permissions(&to, fs::Permissions::from_mode(mode)).with_context(|| format!("make {} runnable as the zip says", to.display()))?;
+            if let Err(why) = fs::set_permissions(&to, fs::Permissions::from_mode(mode)) {
+                chromium_declined |= name.as_path() == Path::new(crate::full::CHROMIUM);
+                declined += 1;
+                if first_declined.len() < 4 {
+                    first_declined.push(format!("{} ({why})", name.display()));
+                }
+            }
         }
     }
+    ensure!(
+        !chromium_declined,
+        "the phone would not let the Chromium be made runnable, so the plugin cannot start: {} of its files lost the mode the zip gives them{}",
+        declined,
+        match first_declined.first() {
+            Some(first) => format!(", among them {first}"),
+            None => String::new(),
+        }
+    );
     Ok(bytes)
 }
 

@@ -131,20 +131,31 @@ pub(crate) fn start_from(occupied: Slot) -> Slot {
 }
 
 /// What is let go of when the saved copy is not the boot set the partitions
-/// hold any more: the copy, and the slot the other system's boot set was in.
-/// What is installed stays — the other system can be switched to again, its
-/// boot set written into the slot that starts next out of the store — but
-/// nothing is left that says a switch back has a boot set to write.
+/// hold any more: the copy, the slot the other system's boot set was in, and
+/// the other system itself.
+///
+/// The three go together because the state has to be one thing or the other.
+/// An update written over the other system's slot leaves that system's boot
+/// set gone from where it was, and its root an orphan in the data partition —
+/// nothing starts it any more. Keeping `system` would say the other system is
+/// still installed while no slot holds its boot set, and every reading of
+/// `occupied == None` would then be wrong: a switch back finds nothing to
+/// switch, and the next switch to the other system saves whatever is in the
+/// slot now as the installed system's copy, which is how a phone ends up
+/// starting the other system every time. Letting go of the record as well
+/// puts the pages back at "no other system is installed", which is the truth
+/// until it is installed again.
 ///
 /// Only the state is touched here, so this half of starting a slot as it
 /// stands can be tried without a phone: the boot control is the other half.
 pub(crate) fn let_go(state: &mut State) {
     state.occupied = None;
     state.saved = None;
+    state.system = None;
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::state::tests::area;
     use crate::state::{Saved, System};
@@ -155,7 +166,7 @@ mod tests {
     /// installed system's set saved before the other one took the slot, and
     /// the other system installed against the installed one's vendor_boot
     /// and dtbo.
-    fn phone(old: &[u8], new: &[u8]) -> (tempfile::TempDir, std::path::PathBuf, State) {
+    pub(crate) fn phone(old: &[u8], new: &[u8]) -> (tempfile::TempDir, std::path::PathBuf, State) {
         let dir = tempfile::tempdir().unwrap();
         let at = dir.path().to_path_buf();
         let saved = Saved { entry: 0, boot: hex(old), init_boot: hex(old) };
@@ -237,7 +248,7 @@ mod tests {
     }
 
     #[test]
-    fn letting_go_of_the_saved_set_keeps_what_is_installed() {
+    fn letting_go_of_the_saved_set_leaves_no_other_system_installed() {
         let (_dir, _at, state) = phone(b"old boot", b"other system boot");
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("systems.toml");
@@ -250,7 +261,6 @@ mod tests {
         let after = State::load(&path).unwrap();
         assert!(after.occupied.is_none(), "nothing is in a slot as its own boot set any more");
         assert!(after.saved.is_none(), "there is no copy left to write back");
-        assert!(after.system.is_some(), "the other system stays installed, to be switched to again");
-        assert_eq!(after.system.unwrap().set.boot, Sha256::digest(b"other system boot").iter().map(|b| format!("{b:02x}")).collect::<String>(), "its own boot set is still what the store holds");
+        assert!(after.system.is_none(), "the other system's boot set is gone from where it was, so its record goes with it");
     }
 }

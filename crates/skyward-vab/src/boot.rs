@@ -91,6 +91,33 @@ fn older<T>(
     answer(&mut read)
 }
 
+/// What is asked of a boot control here: which slot starts next, what it
+/// holds of the slots, and having a slot start next. The phone's own does
+/// the calls; a test's can remember them, so that what decides which slot
+/// starts can be tried without a phone.
+pub trait Starting {
+    /// The slot the bootloader starts next.
+    fn active(&self) -> Result<Slot>;
+    /// What it holds of the slots now.
+    fn slots(&self) -> Result<BootSlots>;
+    /// Have the bootloader start `slot` next.
+    fn set_active(&self, slot: Slot) -> Result<()>;
+}
+
+impl Starting for BootControl<'_> {
+    fn active(&self) -> Result<Slot> {
+        BootControl::active(self)
+    }
+
+    fn slots(&self) -> Result<BootSlots> {
+        BootControl::slots(self)
+    }
+
+    fn set_active(&self, slot: Slot) -> Result<()> {
+        BootControl::set_active(self, slot)
+    }
+}
+
 impl<'a> BootControl<'a> {
     /// Reach the running boot control: the newer kind through `binder`
     /// where the phone describes one, the older kind through `hardware`

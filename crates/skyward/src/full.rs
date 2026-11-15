@@ -32,7 +32,7 @@ pub const PLACES: [&str; 3] = [
 ];
 
 /// The one file that has to be there for the plugin to be a plugin.
-const CHROMIUM: &str = "usr/lib/chromium/chromium";
+pub const CHROMIUM: &str = "usr/lib/chromium/chromium";
 
 /// How long a page is given to come back. A recovery has nothing to do with
 /// a browser that will not answer, and the owner is holding the phone.

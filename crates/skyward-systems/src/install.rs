@@ -66,6 +66,20 @@ impl Store {
     }
 }
 
+/// Have `control` start the slot that was written over: the installed
+/// system's, which is the other one from `occupied`, where the other
+/// system's boot set was. Says which slot it started.
+///
+/// This is the whole of what a switch back over an updated slot does to the
+/// phone besides the state — and the one part of it a test cannot ask a real
+/// phone for, so the control is whatever is handed in.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn start_at(control: &dyn skyward_vab::boot::Starting, occupied: skyward_vab::Slot) -> anyhow::Result<skyward_vab::Slot> {
+    let installed = crate::guard::start_from(occupied);
+    control.set_active(installed)?;
+    Ok(installed)
+}
+
 #[cfg(target_os = "android")]
 pub use sys::*;
 
@@ -238,15 +252,16 @@ mod sys {
     /// start the phone with a boot image from before an update over the
     /// system and vendor from after it, and it would not come up, or it
     /// would come up part way and crash. What was saved is let go instead,
-    /// and said in kmsg, so a phone that then starts from an updated slot
-    /// has an account of why it started as it was.
+    /// with the other system's record, because nothing holds its boot set
+    /// any more; kmsg says so, so a phone that then starts from an updated
+    /// slot has an account of why it started as it was and why the other
+    /// system has to be installed again.
     fn start_as_it_is(slot: Slot, why: &anyhow::Error) -> Result<()> {
-        let installed = guard::start_from(slot);
         let (binder, hardware) = (skyward_binder::driver::Binder::open()?, skyward_binder::driver::Binder::hardware()?);
         let control = skyward_vab::boot::BootControl::open(&binder, &hardware)?;
-        control.set_active(installed)?;
+        let installed = start_at(&control, slot)?;
         let _ = skyward_sys::kmsg(&format!(
-            "the installed system's partitions were written over ({why:#}); slot {} starts as it is, and the saved boot set is let go rather than written back",
+            "the installed system's partitions were written over ({why:#}); slot {} starts as it is, its boot set let go of rather than written back, and the other system's record goes with it - it is to be installed again",
             installed.letter()
         ));
         writable(|| {
@@ -422,6 +437,12 @@ mod sys {
         ensure!(skyward_block::mount::is_mount_point(data())?, "the data partition is not open");
         resume()?;
         let state = state()?;
+        // Where the switch back finds the partitions written over, it lets go
+        // of the other system's record along with the saved copy; the root it
+        // leaves behind is an orphan then, and this is the call that was asked
+        // to take everything away, so the root is kept here rather than read
+        // out of the state afterwards.
+        let root = state.system.as_ref().map(|system| system.root.clone());
         if let Some(suffix) = state.occupied.as_deref() {
             let slot = Slot::from_suffix(suffix).with_context(|| format!("the other system is in slot {suffix:?}"))?;
             switch_back_for_erase(&state, slot)?;
@@ -429,9 +450,13 @@ mod sys {
         writable(|| {
             let path = Path::new(PATH);
             let mut state = State::load(path)?;
-            if let Some(system) = &state.system {
-                system.root.remove()?;
+            if let Some(root) = &root {
+                root.remove()?;
+            }
+            if state.system.is_some() || state.occupied.is_some() || state.saved.is_some() {
                 state.system = None;
+                state.occupied = None;
+                state.saved = None;
                 state.save(path)?;
             }
             if let Some(store) = &state.store {
@@ -464,5 +489,43 @@ mod tests {
         assert_eq!(sizes(100 << 20, 9 * GB), [GB, 8 * GB]);
         assert_eq!(sizes(20 * GB, 300 * GB), [20 * GB, 32 * GB, 64 * GB, 128 * GB, 256 * GB]);
         assert!(sizes(20 * GB, 10 * GB).is_empty(), "no room for it at all");
+    }
+
+    /// A boot control that remembers what it was told to start.
+    struct Recorder(std::sync::Mutex<Vec<skyward_vab::Slot>>);
+
+    impl skyward_vab::boot::Starting for Recorder {
+        fn active(&self) -> anyhow::Result<skyward_vab::Slot> {
+            Ok(skyward_vab::Slot::A)
+        }
+
+        fn slots(&self) -> anyhow::Result<skyward_vab::BootSlots> {
+            Ok(skyward_vab::BootSlots { active: skyward_vab::Slot::A, bootable: [true, true], successful: [true, true] })
+        }
+
+        fn set_active(&self, slot: skyward_vab::Slot) -> anyhow::Result<()> {
+            self.0.lock().unwrap().push(slot);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_slot_started_over_an_updated_one_is_the_installed_systems_not_the_other_ones() {
+        let control = Recorder(Default::default());
+        assert_eq!(start_at(&control, skyward_vab::Slot::B).unwrap(), skyward_vab::Slot::A, "the other system is in B, so A starts");
+        assert_eq!(*control.0.lock().unwrap(), [skyward_vab::Slot::A], "and the boot control is told so, not B");
+    }
+
+    #[test]
+    fn once_the_other_systems_slot_is_let_go_of_there_is_nothing_left_to_switch_to() {
+        let (_dir, _at, state) = crate::guard::tests::phone(b"old boot", b"other system boot");
+        let mut gone = state;
+        crate::guard::let_go(&mut gone);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("systems.toml");
+        gone.save(&path).unwrap();
+        let places = crate::switch::Places { state: &path, by_name: dir.path(), store: dir.path(), program: dir.path() };
+        let why = crate::switch::switch(&places, skyward_vab::Slot::A, crate::state::Who::Other).unwrap_err();
+        assert!(format!("{why:#}").contains("no other system is installed"), "the trap that ends in the other system starting every time is shut: {why:#}");
     }
 }
