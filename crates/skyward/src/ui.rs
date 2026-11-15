@@ -214,31 +214,48 @@ fn unload_cover_touch() {
 /// Above it the panel runs in high brightness mode, which the stock system
 /// keeps for strong sunlight and its slider does not reach. The panel the
 /// display driver booted with gives that maximum in the device tree.
+///
+/// Every step here is optional, because a panel the driver booted with is
+/// not always one that gives these numbers: the connectors of a foldable
+/// whose inner panel is missing come up on a Qualcomm reference panel from
+/// the dtbo, which carries none of the `mi,*` properties. That number only
+/// decides how bright the slider goes, so a panel without it gets the whole
+/// of its own range as normal rather than leaving the screen dark.
 fn normal_max(max: u32, display: &str) -> Result<u32> {
     let param = format!("/sys/module/msm_drm/parameters/{display}");
-    let boot = fs::read_to_string(&param).with_context(|| format!("read {param}"))?;
+    let Ok(boot) = fs::read_to_string(&param) else {
+        return Ok(max);
+    };
     // The panel's node, then its configuration after a colon, as in
     // "qcom,mdss_dsi_m1_42_02_0a_dsc_cmd:"; the driver takes no name
     // without the colon either.
-    let (name, _) = boot.trim().split_once(':').with_context(|| format!("{param} names no panel: {boot:?}"))?;
+    let Some((name, _)) = boot.trim().split_once(':') else {
+        return Ok(max);
+    };
     let soc = Path::new("/proc/device-tree/soc");
-    let node = fs::read_dir(soc)
-        .with_context(|| format!("read {}", soc.display()))?
+    let Ok(entries) = fs::read_dir(soc) else {
+        return Ok(max);
+    };
+    let node = entries
         .map(|e| e.map(|e| e.path().join(name)))
         .collect::<std::io::Result<Vec<_>>>()?
         .into_iter()
-        .find(|p| p.is_dir())
-        .ok_or_else(|| anyhow!("panel {name} is not in the device tree"))?;
+        .find(|p| p.is_dir());
+    let Some(node) = node else {
+        return Ok(max);
+    };
     let cell = |prop: &str| -> Result<u32> {
         let path = node.join(prop);
         let bytes = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
         let cell: [u8; 4] = bytes.as_slice().try_into().map_err(|_| anyhow!("{} is not one cell", path.display()))?;
         Ok(u32::from_be_bytes(cell))
     };
-    let (normal, full) = NORMAL_MAX
-        .iter()
-        .find(|(normal, _)| node.join(normal).exists())
-        .with_context(|| format!("panel {name} gives its normal maximum as none of {NORMAL_MAX:?}"))?;
+    // A panel that gives none of these is one whose whole range is normal:
+    // the reference panel the dtbo keeps for a phone whose own is missing
+    // is one, and it still has a usable backlight.
+    let Some((normal, full)) = NORMAL_MAX.iter().find(|(normal, _)| node.join(normal).exists()) else {
+        return Ok(max);
+    };
     let (normal, full) = (cell(normal)?, cell(full)?);
     ensure!(normal > 0 && normal <= full, "panel {name}: normal maximum {normal} out of {full}");
     Ok((f64::from(max) * f64::from(normal) / f64::from(full)).round() as u32)
@@ -1479,7 +1496,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
     }
     let mut info = skyward_info::collect(cfg)?;
     let fonts = Fonts::load(font, 0, mono)?;
-    let mut inner = KmsSurface::open("/dev/dri/card0")?;
+    let mut inner = KmsSurface::open_named("/dev/dri/card0", cfg.display.panel.as_deref())?;
     let (w, h) = inner.size();
     eprintln!("display {}", inner.describe());
     let scale = cfg.display.density as f32 / 160.0;
@@ -1488,6 +1505,12 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
     // of the two is driven at a time — asked for both, the display processor
     // held up the phone's own screen's flips until the frame timed out — and
     // the cover's screen is opened the first time the phone shuts.
+    //
+    // A configuration that names the panel it draws on has already said
+    // which screen that is, and the folded state is no longer what picks
+    // it: a phone whose inner panel is gone reports no folded state at all,
+    // and switching would only take the pages off the screen it named.
+    let folio = cfg.display.covers && cfg.display.panel.is_none();
     let mut shut_state = false;
     let mut cover_broken = false;
     let mut cover: Option<KmsSurface> = None;
@@ -1499,8 +1522,12 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
     // adbd and fastbootd ask over it to go over to fastboot and back.
     let control = Control::open()?;
     let mut haptics = cfg.haptics.as_ref().map(Haptics::open).transpose()?;
-    let mut backlight = Backlight::open()?;
-    let mut cover_backlight = if cfg.display.covers {
+    let mut backlight = Backlight::open(cfg.display.backlight.as_deref())?;
+    // The cover's own backlight belongs to the second screen's panel. A
+    // configuration that names its panel has said which screen the pages
+    // are on, so there is no second screen to light: opening it here would
+    // raise the very backlight the phone is not showing.
+    let mut cover_backlight = if folio {
         match Backlight::open_named("panel1-backlight", "dsi_display1") {
             Ok(b) => Some(b),
             Err(e) => {
@@ -1511,6 +1538,22 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
     } else {
         None
     };
+    // A configuration that named the cover panel draws on it from the first
+    // frame, so its digitizer has to be there from the first frame too: the
+    // switch below is what loads it on a phone that goes from one screen to
+    // the other, and that never happens here.
+    //
+    // The driver is loaded after the panel is up rather than at boot: put in
+    // while the inner panel is still lit, it takes that panel going dark as
+    // a suspend of its own and leaves the controller reporting gestures and
+    // no touch point.
+    // Only a configuration that named its panel gets here, and such a
+    // configuration keeps `folio` off, so the switch below never loads this.
+    if cfg.display.panel.is_some() {
+        if let Err(e) = load_cover_touch(cfg) {
+            let _ = skyward_sys::kmsg(&format!("the cover digitizer is not loaded: {e:#}"));
+        }
+    }
     // A phone that starts open keeps the bootloader's logo on its cover's
     // panel: a panel nothing ever refreshed holds the last frame it was
     // given, lit, until it is sent its own off command. Where a display
@@ -1518,7 +1561,11 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
     // bootloader left it with no display the kernel can take down, the
     // panel is set up and taken down again — the one path that sends it the
     // command, and one that only lands with the phone's own panel off first.
-    if cfg.display.covers && shut_now() == Some(false) {
+    //
+    // Only a phone that switches between its two screens does this: a
+    // configuration that named the cover panel has already made it the one
+    // the pages are on, and darkening it here would put the pages out.
+    if folio && shut_now() == Some(false) {
         let cleared = match inner.darken(1) {
             Ok(true) => true,
             Ok(false) => false,
@@ -1963,8 +2010,9 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         }
         // The phone shut or opened: the pages go from one screen to the
         // other, the screen they leave going dark first, as the display
-        // processor is never asked to run both at once.
-        if cfg.display.covers {
+        // processor is never asked to run both at once. A configuration
+        // that named its panel keeps the pages where it put them.
+        if folio {
             if let Some(shut) = shut_now() {
                 if shut != shut_state {
                     if shut && !cover_broken {
